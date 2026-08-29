@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  background: #0b0e11;
+  color: #e7eaf0;
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+body {
+  font-family: "JetBrains Mono", monospace;
+}
+
+/* Mobile-first 安全防護：任何長數字/幣種名稱都不應撐開版面 */
+* {
+  min-width: 0;
+}
+img,
+svg,
+canvas {
+  max-width: 100%;
+  height: auto;
+}
+.numeric-safe {
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+/* 主要操作按鈕：最小 44px 高，符合觸控標準 */
+.btn-primary {
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: #232937;
+  border-radius: 4px;
+}
