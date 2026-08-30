@@ -7,6 +7,23 @@ import { buildIndicatorSet, buildOpportunity, classifyMarketRegime } from "./sco
 import { computeDailyState } from "./dailyState";
 import { computeCapitalState, effectiveMaxRiskPct } from "./phases";
 import { CoinSnapshot, FearGreed, GlobalMarketSnapshot, MarketRegime, OpportunityCandidate } from "./types";
+import {
+  PaperPosition,
+  PaperTrade,
+  checkPositions,
+  computePaperStats,
+  loadClosedTrades,
+  loadOpenPositions,
+  openPositionFromCandidate,
+  saveClosedTrades,
+  saveOpenPositions,
+} from "./paperTrading";
+import {
+  NotificationPermissionStatus,
+  getNotificationPermission,
+  requestNotificationPermission,
+  showNotification,
+} from "./notifications";
 
 const SLOW_REFRESH_MS = 60_000; // 大盤 / 恐慌貪婪：60 秒（僅供市場頁參考，不影響幣種評分）
 const SCAN_REFRESH_MS = 5 * 60_000; // 完整技術指標掃描：5 分鐘（規格書 PART16）
@@ -33,6 +50,12 @@ export function useMarketData() {
   const [scanUpdatedAt, setScanUpdatedAt] = useState<Date | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [paperOpen, setPaperOpen] = useState<PaperPosition[]>([]);
+  const [paperClosed, setPaperClosed] = useState<PaperTrade[]>([]);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionStatus>("default");
+
+  const paperOpenRef = useRef<PaperPosition[]>([]);
+  const paperClosedRef = useRef<PaperTrade[]>([]);
 
   const closesCache = useRef<Record<string, number[]>>({});
   const tickersRef = useRef<Record<string, BinanceTicker>>({});
@@ -46,6 +69,18 @@ export function useMarketData() {
     setCapitalState(c);
     setPeak(Math.max(c, p));
     setHydrated(true);
+
+    paperOpenRef.current = loadOpenPositions();
+    setPaperOpen(paperOpenRef.current);
+    paperClosedRef.current = loadClosedTrades();
+    setPaperClosed(paperClosedRef.current);
+    setNotificationPermission(getNotificationPermission());
+  }, []);
+
+  const requestNotifications = useCallback(async () => {
+    const status = await requestNotificationPermission();
+    setNotificationPermission(status);
+    return status;
   }, []);
 
   const setCapital = useCallback(
@@ -77,6 +112,27 @@ export function useMarketData() {
         tickersRef.current = { ...tickersRef.current, [tick.symbol]: tick };
         setTickers((prev) => ({ ...prev, [tick.symbol]: tick }));
         setLastTickAt(new Date());
+
+        // 用最新價格檢查該幣種是否有模擬部位觸價出場
+        const symbol = tick.symbol.replace("USDT", "");
+        if (paperOpenRef.current.some((p) => p.symbol === symbol)) {
+          const { stillOpen, newlyClosed } = checkPositions(paperOpenRef.current, { [symbol]: tick.price });
+          if (newlyClosed.length > 0) {
+            paperOpenRef.current = stillOpen;
+            paperClosedRef.current = [...paperClosedRef.current, ...newlyClosed];
+            setPaperOpen(stillOpen);
+            setPaperClosed(paperClosedRef.current);
+            saveOpenPositions(stillOpen);
+            saveClosedTrades(paperClosedRef.current);
+            newlyClosed.forEach((t) => {
+              showNotification(
+                t.result === "WIN" ? `✅ 模擬交易獲利出場：${t.symbol}` : `🛑 模擬交易停損出場：${t.symbol}`,
+                `R倍數：${t.rMultiple.toFixed(2)}，進場 ${t.entryPrice.toFixed(4)} → 出場 ${t.exitPrice.toFixed(4)}`,
+                `paper-${t.id}`
+              );
+            });
+          }
+        }
       },
       (status) => setConnectionStatus(status)
     );
@@ -159,6 +215,27 @@ export function useMarketData() {
     setScanUpdatedAt(new Date());
     if (errs.length) setErrors((prev) => [...new Set([...prev, ...errs])]);
     setLoading(false);
+
+    // 自動模擬交易：S/A 級且非追高警示、目前沒有該幣種未平倉部位，就開一筆模擬部位
+    const openSymbols = new Set(paperOpenRef.current.map((p) => p.symbol));
+    const newPositions: PaperPosition[] = [];
+    built.forEach((c) => {
+      if ((c.grade === "S" || c.grade === "A") && !c.doNotChase && !openSymbols.has(c.coin.symbol)) {
+        const pos = openPositionFromCandidate(c);
+        newPositions.push(pos);
+        openSymbols.add(c.coin.symbol);
+        showNotification(
+          `🚨 ${c.grade}級機會：${c.coin.symbol}`,
+          `Score ${c.opportunityScore.toFixed(0)}/100，已自動開立模擬部位（進場 ${pos.entryPrice.toFixed(4)}）`,
+          `open-${pos.id}`
+        );
+      }
+    });
+    if (newPositions.length > 0) {
+      paperOpenRef.current = [...paperOpenRef.current, ...newPositions];
+      setPaperOpen(paperOpenRef.current);
+      saveOpenPositions(paperOpenRef.current);
+    }
   }, []);
 
   const reload = useCallback(async () => {
@@ -207,6 +284,7 @@ export function useMarketData() {
   const daily = computeDailyState(regime, candidates, maxRisk);
   const top3 = candidates.filter((c) => !c.doNotChase).slice(0, 3);
   const dangerous = candidates.filter((c) => c.doNotChase || c.riskFlags.overheated).slice(0, 3);
+  const paperStats = computePaperStats(paperClosed);
 
   return {
     hydrated,
@@ -232,5 +310,10 @@ export function useMarketData() {
     errors,
     loading,
     reload,
+    paperOpen,
+    paperClosed,
+    paperStats,
+    notificationPermission,
+    requestNotifications,
   };
-    }
+}
