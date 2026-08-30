@@ -101,6 +101,44 @@ export async function fetchKlines(symbol: string, interval: string, limit: numbe
   }
 }
 
+// 分頁抓取較長歷史（給回測用）。Binance 單次最多 1000 根，用 endTime 往回翻頁。
+export async function fetchKlinesHistory(symbol: string, interval: string, totalBars: number = 2000): Promise<Candle[]> {
+  const maxPerCall = 1000;
+  let all: Candle[] = [];
+  let endTime: number | undefined = undefined;
+
+  while (all.length < totalBars) {
+    const remaining = totalBars - all.length;
+    const limit = Math.min(maxPerCall, remaining);
+    const url =
+      `${REST_BASE}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}` +
+      (endTime ? `&endTime=${endTime}` : "");
+    let res: Response;
+    try {
+      res = await fetch(url, { cache: "no-store" });
+    } catch (err) {
+      throw new DataSourceError(`binance:klines_history:${symbol}`, (err as Error).message);
+    }
+    if (!res.ok) throw new DataSourceError(`binance:klines_history:${symbol}`, `HTTP ${res.status}`);
+    const data = await res.json();
+    const batch: Candle[] = (data as any[]).map((k) => ({
+      time: Math.floor(k[0] / 1000),
+      open: Number(k[1]),
+      high: Number(k[2]),
+      low: Number(k[3]),
+      close: Number(k[4]),
+      volume: Number(k[5]),
+    }));
+    if (batch.length === 0) break;
+    all = [...batch, ...all];
+    endTime = batch[0].time * 1000 - 1;
+    if (batch.length < limit) break; // 已經沒有更早的資料了
+    await new Promise((r) => setTimeout(r, 200)); // 避免連續分頁請求過快
+  }
+
+  return all;
+}
+
 export type ConnectionStatus = "CONNECTING" | "LIVE" | "DELAYED" | "ERROR";
 
 // 瀏覽器端 WebSocket，訂閱多個幣種的即時 ticker。
