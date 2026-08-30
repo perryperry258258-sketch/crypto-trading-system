@@ -33,6 +33,7 @@ export function useMarketData() {
   const [regime, setRegime] = useState<MarketRegime>("SIDEWAYS");
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("CONNECTING");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [lastTickAt, setLastTickAt] = useState<Date | null>(null);
   const [scanUpdatedAt, setScanUpdatedAt] = useState<Date | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,6 +79,7 @@ export function useMarketData() {
       (tick) => {
         tickersRef.current = { ...tickersRef.current, [tick.symbol]: tick };
         setTickers((prev) => ({ ...prev, [tick.symbol]: tick }));
+        setLastTickAt(new Date());
       },
       (status) => setConnectionStatus(status)
     );
@@ -232,9 +234,10 @@ export function useMarketData() {
     maxRisk,
     connectionStatus,
     lastUpdated,
+    lastTickAt,
     scanUpdatedAt,
     errors,
     loading,
     reload,
   };
-}
+    }
