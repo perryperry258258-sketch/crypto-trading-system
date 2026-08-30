@@ -15,17 +15,15 @@ export interface Phase {
 }
 
 export interface CoinSnapshot {
-  id: string; // coingecko id
-  symbol: string;
+  id: string; // Binance symbol, e.g. BTCUSDT
+  symbol: string; // 顯示用，例如 BTC
   name: string;
   price: number;
   change24h: number; // %
-  change7d: number | null; // %
   high24h: number;
   low24h: number;
-  volume24h: number;
-  marketCap: number;
-  sparkline: number[]; // ~7d hourly closes, oldest→newest
+  volume24h: number; // quote volume (USDT)
+  marketCap: number; // 來自 CoinGecko，非即時
 }
 
 export interface GlobalMarketSnapshot {
