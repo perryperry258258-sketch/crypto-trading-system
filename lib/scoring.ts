@@ -115,9 +115,9 @@ export function buildOpportunity(
   const chaseRisk = hasSpiked && indicators.rsi14 >= 75;
   if (chaseRisk) reasons.push(`24H 已上漲 ${coin.change24h.toFixed(1)}%，RSI 極端，追高風險高`);
 
-  // 簡化版假突破偵測：價格接近近7日高點但量能分數偏低
-  const sparklineHigh = coin.sparkline.length ? Math.max(...coin.sparkline) : price;
-  const nearHigh = sparklineHigh > 0 && price >= sparklineHigh * 0.98;
+  // 簡化版假突破偵測：價格接近近期高點但量能分數偏低（用 K 線收盤價序列本身判斷）
+  const recentHigh = closes.length ? Math.max(...closes) : price;
+  const nearHigh = recentHigh > 0 && price >= recentHigh * 0.98;
   const falseBreakoutRisk = nearHigh && volumeScore < 45;
   if (falseBreakoutRisk) reasons.push("價格逼近前高但量能未同步放大，疑似假突破");
 
