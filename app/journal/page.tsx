@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useMarketData } from "@/lib/useMarketData";
 import { fetchKlinesHistory } from "@/lib/binance";
 import { runBacktest, BacktestResult } from "@/lib/backtest";
+import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
   NORMAL: { label: "正常", note: "尚未觸發保護機制。", className: "bg-bull/10 text-bull border-bull/30" },
@@ -119,28 +120,33 @@ export default function JournalPage() {
         {paperStats.totalTrades === 0 ? (
           <div className="text-sm text-subtext text-center py-2">尚無已平倉的模擬交易紀錄</div>
         ) : (
-          <div className="grid grid-cols-2 gap-2 text-center text-sm">
-            <div className="rounded-xl bg-panel2 p-3">
-              <div className="text-xs text-subtext">勝率</div>
-              <div className="font-semibold numeric-safe">{paperStats.winRate.toFixed(1)}%</div>
+          <>
+            <div className="mb-3">
+              <EquityCurve rMultiples={paperClosed.map((t) => t.rMultiple)} />
             </div>
-            <div className="rounded-xl bg-panel2 p-3">
-              <div className="text-xs text-subtext">總交易數</div>
-              <div className="font-semibold numeric-safe">{paperStats.totalTrades}</div>
-            </div>
-            <div className="rounded-xl bg-panel2 p-3">
-              <div className="text-xs text-subtext">平均 R</div>
-              <div className={`font-semibold numeric-safe ${paperStats.avgR >= 0 ? "text-bull" : "text-bear"}`}>
-                {paperStats.avgR.toFixed(2)}
+            <div className="grid grid-cols-2 gap-2 text-center text-sm">
+              <div className="rounded-xl bg-panel2 p-3">
+                <div className="text-xs text-subtext">勝率</div>
+                <div className="font-semibold numeric-safe">{paperStats.winRate.toFixed(1)}%</div>
+              </div>
+              <div className="rounded-xl bg-panel2 p-3">
+                <div className="text-xs text-subtext">總交易數</div>
+                <div className="font-semibold numeric-safe">{paperStats.totalTrades}</div>
+              </div>
+              <div className="rounded-xl bg-panel2 p-3">
+                <div className="text-xs text-subtext">平均 R</div>
+                <div className={`font-semibold numeric-safe ${paperStats.avgR >= 0 ? "text-bull" : "text-bear"}`}>
+                  {paperStats.avgR.toFixed(2)}
+                </div>
+              </div>
+              <div className="rounded-xl bg-panel2 p-3">
+                <div className="text-xs text-subtext">Profit Factor</div>
+                <div className="font-semibold numeric-safe">
+                  {paperStats.profitFactor === Infinity ? "∞" : paperStats.profitFactor.toFixed(2)}
+                </div>
               </div>
             </div>
-            <div className="rounded-xl bg-panel2 p-3">
-              <div className="text-xs text-subtext">Profit Factor</div>
-              <div className="font-semibold numeric-safe">
-                {paperStats.profitFactor === Infinity ? "∞" : paperStats.profitFactor.toFixed(2)}
-              </div>
-            </div>
-          </div>
+          </>
         )}
       </section>
 
@@ -247,6 +253,11 @@ export default function JournalPage() {
                     <div className="text-xs text-subtext mt-1">
                       約 {Math.round(btResult.totalBars / 24)} 天期間，本金大概會變成這樣
                     </div>
+                  </div>
+
+                  <div className="mb-3">
+                    <div className="text-xs text-subtext mb-2">資金曲線（累積 R）</div>
+                    <EquityCurve rMultiples={btResult.trades.map((t) => t.rMultiple)} />
                   </div>
 
                   <details className="text-xs">
