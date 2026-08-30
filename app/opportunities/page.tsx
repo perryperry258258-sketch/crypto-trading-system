@@ -2,9 +2,23 @@
 
 import { useMarketData } from "@/lib/useMarketData";
 import OpportunityCard from "@/components/OpportunityCard";
+import PriceChart from "@/components/PriceChart";
 
 export default function OpportunitiesPage() {
   const { candidates, top3, dangerous, loading, reload, errors } = useMarketData();
+
+  const btcCandidate = candidates.find((c) => c.coin.symbol === "BTC");
+  const chartPlan =
+    btcCandidate && btcCandidate.opportunityScore >= 80 && !btcCandidate.doNotChase
+      ? {
+          entryLow: btcCandidate.entryLow,
+          entryHigh: btcCandidate.entryHigh,
+          stopLoss: btcCandidate.stopLoss,
+          tp1: btcCandidate.tp1,
+          tp2: btcCandidate.tp2,
+          tp3: btcCandidate.tp3,
+        }
+      : undefined;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -28,6 +42,10 @@ export default function OpportunitiesPage() {
           <div className="text-subtext pt-1">本次更新部分失敗，以下顯示最近一次成功取得的資料，按右上角「更新」重試。</div>
         </div>
       )}
+
+      <section className="mb-5">
+        <PriceChart symbol="BTCUSDT" plan={chartPlan} />
+      </section>
 
       <section className="mb-5">
         <h2 className="text-sm font-display font-semibold mb-2">🔥 今日高品質機會</h2>
