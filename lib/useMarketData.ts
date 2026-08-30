@@ -2,20 +2,17 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BinanceLiveFeed, BinanceTicker, ConnectionStatus, DataSourceError as BinanceError, WATCHLIST_PAIRS, fetchKlines, fetchTickersRest } from "./binance";
-import { DataSourceError as CoinGeckoError, WATCHLIST_IDS, fetchFearGreed, fetchGlobalMarket, fetchMarketCaps } from "./coingecko";
+import { DataSourceError as CoinGeckoError, fetchFearGreed, fetchGlobalMarket } from "./coingecko";
 import { buildIndicatorSet, buildOpportunity, classifyMarketRegime } from "./scoring";
 import { computeDailyState } from "./dailyState";
 import { computeCapitalState, effectiveMaxRiskPct } from "./phases";
 import { CoinSnapshot, FearGreed, GlobalMarketSnapshot, MarketRegime, OpportunityCandidate } from "./types";
 
-const SLOW_REFRESH_MS = 60_000; // 市值/大盤/情緒面：60 秒（配合 CoinGecko 免費版限制）
+const SLOW_REFRESH_MS = 60_000; // 大盤 / 恐慌貪婪：60 秒（僅供市場頁參考，不影響幣種評分）
 const SCAN_REFRESH_MS = 5 * 60_000; // 完整技術指標掃描：5 分鐘（規格書 PART16）
 const CAPITAL_KEY = "cts_capital_v1";
 const PEAK_KEY = "cts_peak_v1";
 
-const PAIR_TO_ID: Record<string, string> = Object.fromEntries(
-  WATCHLIST_PAIRS.map((pair) => [pair, WATCHLIST_IDS[pair.replace("USDT", "")]])
-);
 const PAIR_TO_SYMBOL: Record<string, string> = Object.fromEntries(
   WATCHLIST_PAIRS.map((pair) => [pair, pair.replace("USDT", "")])
 );
@@ -26,7 +23,6 @@ export function useMarketData() {
   const [hydrated, setHydrated] = useState(false);
 
   const [tickers, setTickers] = useState<Record<string, BinanceTicker>>({});
-  const [marketCaps, setMarketCaps] = useState<Record<string, number>>({});
   const [global, setGlobal] = useState<GlobalMarketSnapshot | null>(null);
   const [fearGreed, setFearGreed] = useState<FearGreed | null>(null);
   const [candidates, setCandidates] = useState<OpportunityCandidate[]>([]);
@@ -40,7 +36,8 @@ export function useMarketData() {
 
   const closesCache = useRef<Record<string, number[]>>({});
   const tickersRef = useRef<Record<string, BinanceTicker>>({});
-  const marketCapsRef = useRef<Record<string, number>>({});
+  const globalRef = useRef<GlobalMarketSnapshot | null>(null);
+  const fearGreedRef = useRef<FearGreed | null>(null);
   const feedRef = useRef<BinanceLiveFeed | null>(null);
 
   useEffect(() => {
@@ -89,23 +86,20 @@ export function useMarketData() {
     return () => feed.disconnect();
   }, []);
 
-  // 市值 / 大盤 / 恐慌貪婪：CoinGecko，60 秒一次
+  // 大盤總覽 / 恐慌貪婪：CoinGecko，60 秒一次。僅供市場頁參考，失敗不影響幣種評分。
   const loadSlow = useCallback(async () => {
     const errs: string[] = [];
     try {
-      const caps = await fetchMarketCaps();
-      marketCapsRef.current = caps;
-      setMarketCaps(caps);
-    } catch (e) {
-      errs.push(e instanceof CoinGeckoError ? `市值資料來源異常 (${e.source})` : "市值資料取得失敗");
-    }
-    try {
-      setGlobal(await fetchGlobalMarket());
+      const g = await fetchGlobalMarket();
+      globalRef.current = g;
+      setGlobal(g);
     } catch (e) {
       errs.push(e instanceof CoinGeckoError ? `大盤資料來源異常 (${e.source})` : "大盤資料取得失敗");
     }
     try {
-      setFearGreed(await fetchFearGreed());
+      const fg = await fetchFearGreed();
+      fearGreedRef.current = fg;
+      setFearGreed(fg);
     } catch {
       errs.push("恐慌貪婪指數取得失敗");
     }
@@ -113,7 +107,7 @@ export function useMarketData() {
     setLastUpdated(new Date());
   }, []);
 
-  // 技術指標完整掃描：Binance K線，5 分鐘一次
+  // 技術指標完整掃描：Binance K線，5 分鐘一次。完全不依賴 CoinGecko。
   const loadScan = useCallback(async () => {
     setLoading(true);
     const errs: string[] = [];
@@ -126,21 +120,24 @@ export function useMarketData() {
       } catch (e) {
         errs.push(e instanceof BinanceError ? `${PAIR_TO_SYMBOL[pair]} K線資料異常` : `${PAIR_TO_SYMBOL[pair]} K線取得失敗`);
       }
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, 120));
     }
     closesCache.current = results;
 
     const btcCloses = results["BTCUSDT"] ?? [];
     const btcTicker = tickersRef.current["BTCUSDT"];
     const btcIndicators = btcCloses.length > 20 ? buildIndicatorSet(btcCloses) : null;
-    const newRegime = classifyMarketRegime(btcTicker?.change24h ?? 0, btcIndicators?.trendScore ?? 50, fearGreed?.value ?? null);
+    const newRegime = classifyMarketRegime(
+      btcTicker?.change24h ?? 0,
+      btcIndicators?.trendScore ?? 50,
+      fearGreedRef.current?.value ?? null
+    );
 
     const built: OpportunityCandidate[] = [];
     WATCHLIST_PAIRS.forEach((pair) => {
       const closes = results[pair];
       const ticker = tickersRef.current[pair];
-      const cgId = PAIR_TO_ID[pair];
-      if (closes && closes.length > 20 && ticker && global) {
+      if (closes && closes.length > 20 && ticker) {
         const coin: CoinSnapshot = {
           id: pair,
           symbol: PAIR_TO_SYMBOL[pair],
@@ -150,9 +147,8 @@ export function useMarketData() {
           high24h: ticker.high24h,
           low24h: ticker.low24h,
           volume24h: ticker.quoteVolume24h,
-          marketCap: marketCapsRef.current[cgId] ?? 0,
         };
-        built.push(buildOpportunity(coin, closes, global, fearGreed, newRegime));
+        built.push(buildOpportunity(coin, closes, globalRef.current, fearGreedRef.current, newRegime));
       } else if (!closes || closes.length <= 20) {
         errs.push(`${PAIR_TO_SYMBOL[pair]} 歷史價格資料不足，暫不計分`);
       }
@@ -163,7 +159,7 @@ export function useMarketData() {
     setScanUpdatedAt(new Date());
     if (errs.length) setErrors((prev) => [...new Set([...prev, ...errs])]);
     setLoading(false);
-  }, [fearGreed, global]);
+  }, []);
 
   const reload = useCallback(async () => {
     setErrors([]);
@@ -179,7 +175,6 @@ export function useMarketData() {
   }, []);
 
   useEffect(() => {
-    // 等第一次 slow load（市值/大盤）進來後再跑第一次掃描，Opportunity Score 才有完整資料
     const t = setTimeout(loadScan, 1500);
     const id = setInterval(loadScan, SCAN_REFRESH_MS);
     return () => {
@@ -192,7 +187,6 @@ export function useMarketData() {
   // 由目前即時 ticker 組成的幣種快照（給市場頁/首頁顯示用，價格為即時）
   const coins: CoinSnapshot[] = WATCHLIST_PAIRS.filter((p) => tickers[p]).map((pair) => {
     const t = tickers[pair];
-    const cgId = PAIR_TO_ID[pair];
     return {
       id: pair,
       symbol: PAIR_TO_SYMBOL[pair],
@@ -202,7 +196,6 @@ export function useMarketData() {
       high24h: t.high24h,
       low24h: t.low24h,
       volume24h: t.quoteVolume24h,
-      marketCap: marketCaps[cgId] ?? 0,
     };
   });
 
