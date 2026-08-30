@@ -86,20 +86,21 @@ export function classifyMarketRegime(
 export function buildOpportunity(
   coin: CoinSnapshot,
   closes: number[],
-  global: GlobalMarketSnapshot,
+  global: GlobalMarketSnapshot | null,
   fearGreed: FearGreed | null,
   regime: MarketRegime
 ): OpportunityCandidate {
   const indicators = buildIndicatorSet(closes);
   const price = coin.price;
 
-  // 量能分數：24H 成交量 / 市值 比例（換手率），比例越高代表資金關注度越高
-  const turnover = coin.marketCap > 0 ? coin.volume24h / coin.marketCap : 0;
+  // 量能分數：直接用 Binance 24H 成交額（USDT）分級，不再依賴 CoinGecko 市值。
+  // 成交額越高代表流動性、資金關注度越高。
+  const quoteVolume = coin.volume24h;
   let volumeScore = 50;
-  if (turnover >= 0.15) volumeScore = 85;
-  else if (turnover >= 0.08) volumeScore = 70;
-  else if (turnover >= 0.04) volumeScore = 55;
-  else if (turnover >= 0.015) volumeScore = 40;
+  if (quoteVolume >= 5_000_000_000) volumeScore = 90;
+  else if (quoteVolume >= 1_000_000_000) volumeScore = 75;
+  else if (quoteVolume >= 300_000_000) volumeScore = 60;
+  else if (quoteVolume >= 50_000_000) volumeScore = 42;
   else volumeScore = 20; // 流動性偏低
   indicators.volumeScore = volumeScore;
 
@@ -108,8 +109,8 @@ export function buildOpportunity(
   const overheated = indicators.rsi14 >= 82;
   if (overheated) reasons.push("RSI 極端過熱 (≥82)");
 
-  const lowLiquidity = turnover < 0.01;
-  if (lowLiquidity) reasons.push("成交量／市值比過低，流動性不足");
+  const lowLiquidity = quoteVolume < 20_000_000;
+  if (lowLiquidity) reasons.push("24H 成交額過低，流動性不足");
 
   const hasSpiked = coin.change24h >= 25;
   const chaseRisk = hasSpiked && indicators.rsi14 >= 75;
@@ -135,7 +136,7 @@ export function buildOpportunity(
   if (regime === "BEAR") marketAdj -= 15;
   if (regime === "PANIC") marketAdj -= 30;
   if (regime === "EUPHORIA") marketAdj -= 10; // 過熱環境降低評分，避免追高
-  if (global.marketCapChange24h < -5) marketAdj -= 10;
+  if (global && global.marketCapChange24h < -5) marketAdj -= 10;
 
   // 情緒面加減分（極端恐慌／極端貪婪都扣分，中性偏多略加分）
   let sentimentAdj = 0;
@@ -199,7 +200,7 @@ export function buildOpportunity(
   const reasonsFor: string[] = [];
   if (indicators.trendScore >= 65) reasonsFor.push("價格站上主要均線，趨勢偏多");
   if (indicators.momentumScore >= 65) reasonsFor.push("動能健康，MACD 柱狀圖轉正");
-  if (volumeScore >= 65) reasonsFor.push("成交量／市值比偏高，資金關注度提升");
+  if (volumeScore >= 65) reasonsFor.push("24H 成交額高，流動性與資金關注度充足");
   if (regime === "BULL") reasonsFor.push("大盤處於多頭格局，環境支持做多");
   if (fearGreed && fearGreed.value >= 45 && fearGreed.value <= 70) reasonsFor.push("市場情緒中性偏多，非極端區間");
   if (reasonsFor.length === 0) reasonsFor.push("目前條件僅屬中性，非明確做多訊號");
@@ -230,4 +231,4 @@ export function buildOpportunity(
     riskFlags,
     doNotChase,
   };
-}
+    }
