@@ -22,7 +22,28 @@ export interface Candle {
   volume: number;
 }
 
-export const WATCHLIST_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"];
+export const WATCHLIST_PAIRS = [
+  "BTCUSDT",
+  "ETHUSDT",
+  "SOLUSDT",
+  "BNBUSDT",
+  "XRPUSDT",
+  "DOGEUSDT",
+  "ADAUSDT",
+  "AVAXUSDT",
+  "LINKUSDT",
+  "DOTUSDT",
+  "TRXUSDT",
+  "TONUSDT",
+  "LTCUSDT",
+  "SUIUSDT",
+  "NEARUSDT",
+  "APTUSDT",
+  "ARBUSDT",
+  "OPUSDT",
+  "ATOMUSDT",
+  "SHIBUSDT",
+];
 
 const REST_BASE = "https://api.binance.com/api/v3";
 const WS_BASE = "wss://stream.binance.com:9443/stream";
