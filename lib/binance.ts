@@ -43,7 +43,7 @@ export const WATCHLIST_PAIRS = [
   "OPUSDT",
   "ATOMUSDT",
   "SHIBUSDT",
-];
+]; // 備用固定清單：動態掃描（fetchTopVolumePairs）失敗時使用
 
 const REST_BASE = "https://api.binance.com/api/v3";
 const WS_BASE = "wss://stream.binance.com:9443/stream";
@@ -137,6 +137,50 @@ export async function fetchKlinesHistory(symbol: string, interval: string, total
   }
 
   return all;
+}
+
+// 穩定幣、槓桿代幣不列入自動掃描（波動邏輯不同，容易誤判）
+const EXCLUDE_PAIRS = new Set([
+  "USDCUSDT",
+  "FDUSDUSDT",
+  "TUSDUSDT",
+  "BUSDUSDT",
+  "DAIUSDT",
+  "USDPUSDT",
+  "EURUSDT",
+  "GBPUSDT",
+  "AEURUSDT",
+  "WBTCUSDT",
+]);
+function isLeveragedToken(symbol: string): boolean {
+  return /(UP|DOWN|BULL|BEAR)USDT$/.test(symbol);
+}
+
+// 動態幣種掃描：抓全市場 USDT 交易對的 24H 成交額，取成交額最高的前 N 個當作監控清單，
+// 讓幣種名單自動跟著市場熱度變化，不用手動維護固定清單。pinned 的幣種一定會保留在清單裡
+// （例如 BTC/ETH，以及目前有模擬部位的幣種，避免部位因為幣種被換掉而追蹤不到）。
+export async function fetchTopVolumePairs(limit: number = 20, pinned: string[] = ["BTCUSDT", "ETHUSDT"]): Promise<string[]> {
+  const url = `${REST_BASE}/ticker/24hr`;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const ranked = (data as any[])
+      .filter((t) => typeof t.symbol === "string" && t.symbol.endsWith("USDT"))
+      .filter((t) => !EXCLUDE_PAIRS.has(t.symbol))
+      .filter((t) => !isLeveragedToken(t.symbol))
+      .map((t) => ({ symbol: t.symbol as string, quoteVolume: Number(t.quoteVolume) }))
+      .sort((a, b) => b.quoteVolume - a.quoteVolume)
+      .map((t) => t.symbol);
+
+    const result = [...pinned];
+    ranked.forEach((s) => {
+      if (result.length < Math.max(limit, pinned.length) && !result.includes(s)) result.push(s);
+    });
+    return result;
+  } catch (err) {
+    throw new DataSourceError("binance:top_volume", (err as Error).message);
+  }
 }
 
 export type ConnectionStatus = "CONNECTING" | "LIVE" | "DELAYED" | "ERROR";
@@ -239,4 +283,4 @@ export class BinanceLiveFeed {
       this.ws.close();
     }
   }
-}
+      }
