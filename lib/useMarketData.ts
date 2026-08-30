@@ -1,7 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BinanceLiveFeed, BinanceTicker, ConnectionStatus, DataSourceError as BinanceError, WATCHLIST_PAIRS, fetchKlines, fetchTickersRest } from "./binance";
+import {
+  BinanceLiveFeed,
+  BinanceTicker,
+  ConnectionStatus,
+  DataSourceError as BinanceError,
+  WATCHLIST_PAIRS,
+  fetchKlines,
+  fetchTickersRest,
+  fetchTopVolumePairs,
+} from "./binance";
 import { DataSourceError as CoinGeckoError, fetchFearGreed, fetchGlobalMarket } from "./coingecko";
 import { buildIndicatorSet, buildOpportunity, classifyMarketRegime } from "./scoring";
 import { computeDailyState } from "./dailyState";
@@ -27,18 +36,16 @@ import {
 
 const SLOW_REFRESH_MS = 60_000; // 大盤 / 恐慌貪婪：60 秒（僅供市場頁參考，不影響幣種評分）
 const SCAN_REFRESH_MS = 5 * 60_000; // 完整技術指標掃描：5 分鐘（規格書 PART16）
+const WATCHLIST_REFRESH_MS = 30 * 60_000; // 動態幣種清單：30 分鐘重新抓一次成交額排名
 const CAPITAL_KEY = "cts_capital_v1";
 const PEAK_KEY = "cts_peak_v1";
-
-const PAIR_TO_SYMBOL: Record<string, string> = Object.fromEntries(
-  WATCHLIST_PAIRS.map((pair) => [pair, pair.replace("USDT", "")])
-);
 
 export function useMarketData() {
   const [capital, setCapitalState] = useState<number>(5000);
   const [peak, setPeak] = useState<number>(5000);
   const [hydrated, setHydrated] = useState(false);
 
+  const [activePairs, setActivePairs] = useState<string[]>(WATCHLIST_PAIRS);
   const [tickers, setTickers] = useState<Record<string, BinanceTicker>>({});
   const [global, setGlobal] = useState<GlobalMarketSnapshot | null>(null);
   const [fearGreed, setFearGreed] = useState<FearGreed | null>(null);
@@ -56,6 +63,7 @@ export function useMarketData() {
 
   const paperOpenRef = useRef<PaperPosition[]>([]);
   const paperClosedRef = useRef<PaperTrade[]>([]);
+  const activePairsRef = useRef<string[]>(WATCHLIST_PAIRS);
 
   const closesCache = useRef<Record<string, number[]>>({});
   const tickersRef = useRef<Record<string, BinanceTicker>>({});
@@ -94,10 +102,32 @@ export function useMarketData() {
     [peak]
   );
 
-  // 建立即時價格 WebSocket（打開網站才連線，離開頁面自動斷開）
+  // 動態幣種掃描：抓 Binance 全市場成交額排名，取代固定清單，並固定保留 BTC/ETH
+  // 與目前有模擬部位的幣種（避免部位追蹤不到）。失敗就沿用目前清單，不影響運作。
+  const refreshWatchlist = useCallback(async () => {
+    const pinned = Array.from(new Set(["BTCUSDT", "ETHUSDT", ...paperOpenRef.current.map((p) => `${p.symbol}USDT`)]));
+    try {
+      const pairs = await fetchTopVolumePairs(20, pinned);
+      const changed = pairs.join(",") !== activePairsRef.current.join(",");
+      if (changed) {
+        activePairsRef.current = pairs;
+        setActivePairs(pairs);
+      }
+    } catch {
+      // 動態清單抓不到，繼續用目前的清單（第一次會是固定備用清單）
+    }
+  }, []);
+
   useEffect(() => {
-    // 先用 REST 立即取得一份初始快照，避免 WebSocket 建立前畫面空白
-    fetchTickersRest()
+    refreshWatchlist();
+    const id = setInterval(refreshWatchlist, WATCHLIST_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [refreshWatchlist]);
+
+  // 建立即時價格 WebSocket（打開網站才連線，離開頁面自動斷開）。
+  // activePairs 變動時（動態清單更新）會斷線重連，訂閱新的幣種組合。
+  useEffect(() => {
+    fetchTickersRest(activePairs)
       .then((data) => {
         tickersRef.current = { ...tickersRef.current, ...data };
         setTickers({ ...tickersRef.current });
@@ -107,7 +137,7 @@ export function useMarketData() {
       });
 
     const feed = new BinanceLiveFeed(
-      WATCHLIST_PAIRS,
+      activePairs,
       (tick) => {
         tickersRef.current = { ...tickersRef.current, [tick.symbol]: tick };
         setTickers((prev) => ({ ...prev, [tick.symbol]: tick }));
@@ -140,7 +170,8 @@ export function useMarketData() {
     feedRef.current = feed;
 
     return () => feed.disconnect();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePairs.join(",")]);
 
   // 大盤總覽 / 恐慌貪婪：CoinGecko，60 秒一次。僅供市場頁參考，失敗不影響幣種評分。
   const loadSlow = useCallback(async () => {
@@ -168,13 +199,15 @@ export function useMarketData() {
     setLoading(true);
     const errs: string[] = [];
     const results: Record<string, number[]> = {};
+    const pairs = activePairsRef.current;
 
-    for (const pair of WATCHLIST_PAIRS) {
+    for (const pair of pairs) {
       try {
         const candles = await fetchKlines(pair, "1h", 200);
         results[pair] = candles.map((c) => c.close);
       } catch (e) {
-        errs.push(e instanceof BinanceError ? `${PAIR_TO_SYMBOL[pair]} K線資料異常` : `${PAIR_TO_SYMBOL[pair]} K線取得失敗`);
+        const sym = pair.replace("USDT", "");
+        errs.push(e instanceof BinanceError ? `${sym} K線資料異常` : `${sym} K線取得失敗`);
       }
       await new Promise((r) => setTimeout(r, 120));
     }
@@ -190,14 +223,15 @@ export function useMarketData() {
     );
 
     const built: OpportunityCandidate[] = [];
-    WATCHLIST_PAIRS.forEach((pair) => {
+    pairs.forEach((pair) => {
       const closes = results[pair];
       const ticker = tickersRef.current[pair];
+      const symbol = pair.replace("USDT", "");
       if (closes && closes.length > 20 && ticker) {
         const coin: CoinSnapshot = {
           id: pair,
-          symbol: PAIR_TO_SYMBOL[pair],
-          name: PAIR_TO_SYMBOL[pair],
+          symbol,
+          name: symbol,
           price: ticker.price,
           change24h: ticker.change24h,
           high24h: ticker.high24h,
@@ -206,7 +240,7 @@ export function useMarketData() {
         };
         built.push(buildOpportunity(coin, closes, globalRef.current, fearGreedRef.current, newRegime));
       } else if (!closes || closes.length <= 20) {
-        errs.push(`${PAIR_TO_SYMBOL[pair]} 歷史價格資料不足，暫不計分`);
+        errs.push(`${symbol} 歷史價格資料不足，暫不計分`);
       }
     });
     built.sort((a, b) => b.opportunityScore - a.opportunityScore);
@@ -262,19 +296,22 @@ export function useMarketData() {
   }, []);
 
   // 由目前即時 ticker 組成的幣種快照（給市場頁/首頁顯示用，價格為即時）
-  const coins: CoinSnapshot[] = WATCHLIST_PAIRS.filter((p) => tickers[p]).map((pair) => {
-    const t = tickers[pair];
-    return {
-      id: pair,
-      symbol: PAIR_TO_SYMBOL[pair],
-      name: PAIR_TO_SYMBOL[pair],
-      price: t.price,
-      change24h: t.change24h,
-      high24h: t.high24h,
-      low24h: t.low24h,
-      volume24h: t.quoteVolume24h,
-    };
-  });
+  const coins: CoinSnapshot[] = activePairs
+    .filter((p) => tickers[p])
+    .map((pair) => {
+      const t = tickers[pair];
+      const symbol = pair.replace("USDT", "");
+      return {
+        id: pair,
+        symbol,
+        name: symbol,
+        price: t.price,
+        change24h: t.change24h,
+        high24h: t.high24h,
+        low24h: t.low24h,
+        volume24h: t.quoteVolume24h,
+      };
+    });
 
   const btc = coins.find((c) => c.symbol === "BTC");
   const eth = coins.find((c) => c.symbol === "ETH");
@@ -291,6 +328,7 @@ export function useMarketData() {
     capital,
     peak,
     setCapital,
+    activePairs,
     coins,
     btc,
     eth,
