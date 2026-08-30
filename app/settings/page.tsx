@@ -11,6 +11,9 @@ const wsStatusLabel: Record<string, { label: string; className: string }> = {
   ERROR: { label: "🔴 Error", className: "text-bear" },
 };
 
+const RATE_KEY = "cts_usdtwd_v1";
+const DEFAULT_RATE = 31.5;
+
 export default function SettingsPage() {
   const {
     capital,
@@ -31,11 +34,29 @@ export default function SettingsPage() {
   const [calcEntry, setCalcEntry] = useState("");
   const [calcStop, setCalcStop] = useState("");
   const [calcRisk, setCalcRisk] = useState(String(capitalState.phase.maxRiskPct.toFixed(2)));
+  const [usdRate, setUsdRate] = useState(DEFAULT_RATE);
+  const [usdRateInput, setUsdRateInput] = useState(String(DEFAULT_RATE));
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    const saved = Number(localStorage.getItem(RATE_KEY));
+    if (saved > 0) {
+      setUsdRate(saved);
+      setUsdRateInput(String(saved));
+    }
+  }, []);
+
+  const saveRate = () => {
+    const v = Number(usdRateInput);
+    if (v > 0) {
+      setUsdRate(v);
+      localStorage.setItem(RATE_KEY, String(v));
+    }
+  };
 
   const tickAgeMs = lastTickAt ? now - lastTickAt.getTime() : null;
   const ws = wsStatusLabel[connectionStatus];
@@ -43,12 +64,13 @@ export default function SettingsPage() {
   const coingeckoOk = global !== null;
   const chartOk = candidates.length > 0 || coins.length > 0; // 圖表與 dashboard 共用同一個 Binance K線來源
 
+  const capitalUsd = capital / usdRate;
   const entryNum = Number(calcEntry);
   const stopNum = Number(calcStop);
   const riskNum = Number(calcRisk);
   const calcValid = entryNum > 0 && stopNum > 0 && stopNum !== entryNum && riskNum > 0;
   const calcResult = calcValid
-    ? calcPositionSize({ capital, riskPct: riskNum, entryPrice: entryNum, stopLossPrice: stopNum })
+    ? calcPositionSize({ capital: capitalUsd, riskPct: riskNum, entryPrice: entryNum, stopLossPrice: stopNum })
     : null;
 
   return (
@@ -101,9 +123,7 @@ export default function SettingsPage() {
         <div className="text-xs text-subtext mb-3 leading-relaxed">
           出現 S/A 級機會、模擬交易平倉時會跳通知。限制：只有這個網站分頁還開著（可在背景）才會運作，完全關閉分頁不會收到。
         </div>
-        {notificationPermission === "granted" && (
-          <div className="text-sm text-bull">🟢 已啟用</div>
-        )}
+        {notificationPermission === "granted" && <div className="text-sm text-bull">🟢 已啟用</div>}
         {notificationPermission === "denied" && (
           <div className="text-sm text-bear">🔴 已被封鎖，請到手機瀏覽器的網站權限設定裡手動開啟</div>
         )}
@@ -121,13 +141,38 @@ export default function SettingsPage() {
       </section>
 
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-2">💱 美金/台幣匯率</div>
+        <div className="text-xs text-subtext mb-3 leading-relaxed">
+          你的本金是台幣，但幣價是美金，這個匯率用來自動換算，讓下面的倉位計算器數字對得起來。
+        </div>
+        <div className="flex gap-2">
+          <input
+            inputMode="decimal"
+            value={usdRateInput}
+            onChange={(e) => setUsdRateInput(e.target.value.replace(/[^0-9.]/g, ""))}
+            className="flex-1 min-w-0 bg-panel2 border border-border rounded-xl px-3 text-lg numeric-safe"
+            style={{ minHeight: 44 }}
+          />
+          <button
+            onClick={saveRate}
+            className="btn-primary px-4 bg-accent/20 text-accent border border-accent/40 text-sm"
+          >
+            儲存
+          </button>
+        </div>
+        <div className="text-xs text-subtext mt-2">
+          目前：1 美金 = {usdRate} 台幣 ・ 本金換算約 ${capitalUsd.toFixed(2)} USD
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">🧮 倉位計算器</div>
         <div className="text-xs text-subtext mb-3 leading-relaxed">
-          進場價、停損價請用同一種幣別填（例如都用美金/USDT），本金預設抓你的資金，也可以自己改。
+          進場價、停損價請填美金（跟 Binance 幣價一致），本金會用上面的匯率自動從台幣換算成美金。
         </div>
         <div className="grid grid-cols-2 gap-2 mb-2">
           <div>
-            <label className="text-[11px] text-subtext mb-1 block">進場價</label>
+            <label className="text-[11px] text-subtext mb-1 block">進場價（USD）</label>
             <input
               inputMode="decimal"
               value={calcEntry}
@@ -138,7 +183,7 @@ export default function SettingsPage() {
             />
           </div>
           <div>
-            <label className="text-[11px] text-subtext mb-1 block">停損價</label>
+            <label className="text-[11px] text-subtext mb-1 block">停損價（USD）</label>
             <input
               inputMode="decimal"
               value={calcStop}
@@ -162,12 +207,12 @@ export default function SettingsPage() {
         {calcResult ? (
           <div className="grid grid-cols-3 gap-2 text-center">
             <div className="rounded-xl bg-panel2 p-3">
-              <div className="text-[11px] text-subtext">建議倉位金額</div>
-              <div className="font-semibold numeric-safe text-accent">{calcResult.positionSize.toFixed(2)}</div>
+              <div className="text-[11px] text-subtext">建議倉位（USD）</div>
+              <div className="font-semibold numeric-safe text-accent">${calcResult.positionSize.toFixed(2)}</div>
             </div>
             <div className="rounded-xl bg-panel2 p-3">
-              <div className="text-[11px] text-subtext">最大虧損金額</div>
-              <div className="font-semibold numeric-safe text-bear">{calcResult.maxLossAmount.toFixed(2)}</div>
+              <div className="text-[11px] text-subtext">最大虧損（USD）</div>
+              <div className="font-semibold numeric-safe text-bear">${calcResult.maxLossAmount.toFixed(2)}</div>
             </div>
             <div className="rounded-xl bg-panel2 p-3">
               <div className="text-[11px] text-subtext">停損距離</div>
@@ -230,4 +275,4 @@ export default function SettingsPage() {
       </section>
     </main>
   );
-}
+          }
