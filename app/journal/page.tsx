@@ -31,6 +31,45 @@ function fmt(n: number) {
   return n.toPrecision(4);
 }
 
+function getVerdict(r: BacktestResult) {
+  if (r.totalTrades < 5) {
+    return {
+      emoji: "🤷",
+      label: "交易次數太少",
+      sentence: "測試期間出現的訊號太少，這個結果還不夠可靠，先不下結論。",
+      className: "text-subtext",
+    };
+  }
+  if (r.profitFactor >= 1.3 && r.avgR > 0) {
+    return {
+      emoji: "🙂",
+      label: "過去表現：有優勢",
+      sentence: "這段期間如果照這套邏輯交易，賺的時候賺得比賠的時候賠得多，整體是正的。",
+      className: "text-bull",
+    };
+  }
+  if (r.profitFactor >= 1.0) {
+    return {
+      emoji: "😐",
+      label: "過去表現：大致打平",
+      sentence: "賺賠差不多，還看不出明顯優勢，不算穩定可靠。",
+      className: "text-warn",
+    };
+  }
+  return {
+    emoji: "😕",
+    label: "過去表現：偏虧",
+    sentence: "這段期間如果照這套邏輯交易，長期是虧錢的。",
+    className: "text-bear",
+  };
+}
+
+// 簡單試算：假設每筆只冒 1% 風險，把一連串 R 倍數換算成本金變化百分比
+function simpleReturnPct(trades: BacktestResult["trades"], riskPct: number = 1) {
+  const multiplier = trades.reduce((acc, t) => acc * (1 + (t.rMultiple * riskPct) / 100), 1);
+  return (multiplier - 1) * 100;
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
   const [btSymbol, setBtSymbol] = useState("BTCUSDT");
@@ -182,35 +221,76 @@ export default function JournalPage() {
 
         {btResult && (
           <div>
-            <div className="grid grid-cols-2 gap-2 text-center text-sm mb-2">
-              <div className="rounded-xl bg-panel2 p-3">
-                <div className="text-xs text-subtext">勝率</div>
-                <div className="font-semibold numeric-safe">{btResult.winRate.toFixed(1)}%</div>
-              </div>
-              <div className="rounded-xl bg-panel2 p-3">
-                <div className="text-xs text-subtext">交易次數</div>
-                <div className="font-semibold numeric-safe">{btResult.totalTrades}</div>
-              </div>
-              <div className="rounded-xl bg-panel2 p-3">
-                <div className="text-xs text-subtext">平均 R</div>
-                <div className={`font-semibold numeric-safe ${btResult.avgR >= 0 ? "text-bull" : "text-bear"}`}>
-                  {btResult.avgR.toFixed(2)}
-                </div>
-              </div>
-              <div className="rounded-xl bg-panel2 p-3">
-                <div className="text-xs text-subtext">Profit Factor</div>
-                <div className="font-semibold numeric-safe">
-                  {btResult.profitFactor === Infinity ? "∞" : btResult.profitFactor.toFixed(2)}
-                </div>
-              </div>
-              <div className="rounded-xl bg-panel2 p-3 col-span-2">
-                <div className="text-xs text-subtext">最大回撤（R）</div>
-                <div className="font-semibold numeric-safe text-bear">-{btResult.maxDrawdownR.toFixed(2)}R</div>
-              </div>
-            </div>
-            <div className="text-[11px] text-subtext">
-              測試範圍：{btResult.totalBars} 根 1小時K棒（約 {Math.round(btResult.totalBars / 24)} 天）
-            </div>
+            {(() => {
+              const verdict = getVerdict(btResult);
+              const simpleReturn = simpleReturnPct(btResult.trades, 1);
+              return (
+                <>
+                  <div className={`rounded-xl bg-panel2 p-3 mb-3`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xl">{verdict.emoji}</span>
+                      <span className={`text-sm font-semibold ${verdict.className}`}>{verdict.label}</span>
+                    </div>
+                    <div className="text-sm text-text leading-relaxed">{verdict.sentence}</div>
+                  </div>
+
+                  <div className="rounded-xl bg-panel2 p-4 mb-3 text-center">
+                    <div className="text-xs text-subtext mb-1">簡單試算（假設每筆只冒 1% 風險）</div>
+                    <div
+                      className={`text-2xl font-display font-bold numeric-safe ${
+                        simpleReturn >= 0 ? "text-bull" : "text-bear"
+                      }`}
+                    >
+                      {simpleReturn >= 0 ? "+" : ""}
+                      {simpleReturn.toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-subtext mt-1">
+                      約 {Math.round(btResult.totalBars / 24)} 天期間，本金大概會變成這樣
+                    </div>
+                  </div>
+
+                  <details className="text-xs">
+                    <summary className="text-subtext cursor-pointer mb-3 select-none">查看詳細數字 ▾</summary>
+                    <div className="grid grid-cols-2 gap-2 text-center text-sm mb-1">
+                      <div className="rounded-xl bg-panel2 p-3">
+                        <div className="text-xs text-subtext">勝率</div>
+                        <div className="font-semibold numeric-safe">{btResult.winRate.toFixed(1)}%</div>
+                        <div className="text-[10px] text-subtext mt-1">贏的次數比例</div>
+                      </div>
+                      <div className="rounded-xl bg-panel2 p-3">
+                        <div className="text-xs text-subtext">交易次數</div>
+                        <div className="font-semibold numeric-safe">{btResult.totalTrades}</div>
+                        <div className="text-[10px] text-subtext mt-1">測試期間總共進場幾次</div>
+                      </div>
+                      <div className="rounded-xl bg-panel2 p-3">
+                        <div className="text-xs text-subtext">平均 R</div>
+                        <div
+                          className={`font-semibold numeric-safe ${btResult.avgR >= 0 ? "text-bull" : "text-bear"}`}
+                        >
+                          {btResult.avgR.toFixed(2)}
+                        </div>
+                        <div className="text-[10px] text-subtext mt-1">平均每筆賺賠幾倍風險</div>
+                      </div>
+                      <div className="rounded-xl bg-panel2 p-3">
+                        <div className="text-xs text-subtext">Profit Factor</div>
+                        <div className="font-semibold numeric-safe">
+                          {btResult.profitFactor === Infinity ? "∞" : btResult.profitFactor.toFixed(2)}
+                        </div>
+                        <div className="text-[10px] text-subtext mt-1">大於 1 代表長期是賺的</div>
+                      </div>
+                      <div className="rounded-xl bg-panel2 p-3 col-span-2">
+                        <div className="text-xs text-subtext">最慘連續虧損</div>
+                        <div className="font-semibold numeric-safe text-bear">-{btResult.maxDrawdownR.toFixed(2)}R</div>
+                        <div className="text-[10px] text-subtext mt-1">代表這段期間最難熬的時候虧了幾倍風險</div>
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-subtext mt-2">
+                      測試範圍：{btResult.totalBars} 根 1小時K棒（約 {Math.round(btResult.totalBars / 24)} 天）
+                    </div>
+                  </details>
+                </>
+              );
+            })()}
           </div>
         )}
       </section>
