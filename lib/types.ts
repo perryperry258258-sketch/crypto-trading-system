@@ -22,8 +22,7 @@ export interface CoinSnapshot {
   change24h: number; // %
   high24h: number;
   low24h: number;
-  volume24h: number; // quote volume (USDT)
-  marketCap: number; // 來自 CoinGecko，非即時
+  volume24h: number; // quote volume (USDT) — 用於流動性判斷，不再依賴市值
 }
 
 export interface GlobalMarketSnapshot {
