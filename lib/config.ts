@@ -4,4 +4,4 @@
 // 留空字串一樣能運作，只是共用的免費額度比較容易被排隊擋下（每分鐘 5-15 次全球共用）。
 // 有 Key 的話會提升到每分鐘 30 次，穩定很多。
 
-export const COINGECKO_API_KEY = "";
+export const COINGECKO_API_KEY = "CG-YBDxj54s7R1r8SaKj4w9AXtp";
