@@ -1,9 +1,10 @@
 import { FearGreed, GlobalMarketSnapshot } from "./types";
+import { COINGECKO_API_KEY } from "./config";
 
 // CoinGecko 只負責 Binance 沒有的「大盤總覽」資料（市值、BTC Dominance）與恐慌貪婪指數，
 // 且僅供市場頁參考顯示 —— 幣種評分／機會偵測已完全不依賴 CoinGecko（改用 Binance 成交量），
 // 就算 CoinGecko 暫時不可用，價格與交易訊號仍會正常運作。
-// 免費、無需 API Key。
+// 免費、無需 API Key，但填了 lib/config.ts 裡的 Demo Key 會更穩定（見該檔案說明）。
 
 const COINGECKO_BASE = "https://api.coingecko.com/api/v3";
 
@@ -18,9 +19,16 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function withKey(url: string): string {
+  if (!COINGECKO_API_KEY) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}x_cg_demo_api_key=${COINGECKO_API_KEY}`;
+}
+
 async function fetchJson(url: string, retries: number = 2): Promise<any> {
+  const fullUrl = withKey(url);
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch(fullUrl, { cache: "no-store" });
     if (res.ok) return res.json();
     if (attempt < retries && (res.status === 429 || res.status >= 500)) {
       await sleep(1500 * (attempt + 1));
