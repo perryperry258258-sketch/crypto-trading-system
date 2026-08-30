@@ -12,8 +12,20 @@ const wsStatusLabel: Record<string, { label: string; className: string }> = {
 };
 
 export default function SettingsPage() {
-  const { capital, setCapital, capitalState, connectionStatus, lastTickAt, lastUpdated, scanUpdatedAt, coins, candidates, global } =
-    useMarketData();
+  const {
+    capital,
+    setCapital,
+    capitalState,
+    connectionStatus,
+    lastTickAt,
+    lastUpdated,
+    scanUpdatedAt,
+    coins,
+    candidates,
+    global,
+    notificationPermission,
+    requestNotifications,
+  } = useMarketData();
   const [input, setInput] = useState(String(capital));
   const [now, setNow] = useState(Date.now());
 
@@ -71,6 +83,30 @@ export default function SettingsPage() {
             <span className="numeric-safe">{scanUpdatedAt ? scanUpdatedAt.toLocaleTimeString() : "—"}</span>
           </div>
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-2">🔔 瀏覽器通知</div>
+        <div className="text-xs text-subtext mb-3 leading-relaxed">
+          出現 S/A 級機會、模擬交易平倉時會跳通知。限制：只有這個網站分頁還開著（可在背景）才會運作，完全關閉分頁不會收到。
+        </div>
+        {notificationPermission === "granted" && (
+          <div className="text-sm text-bull">🟢 已啟用</div>
+        )}
+        {notificationPermission === "denied" && (
+          <div className="text-sm text-bear">🔴 已被封鎖，請到手機瀏覽器的網站權限設定裡手動開啟</div>
+        )}
+        {notificationPermission === "unsupported" && (
+          <div className="text-sm text-subtext">此瀏覽器不支援通知功能</div>
+        )}
+        {notificationPermission === "default" && (
+          <button
+            onClick={requestNotifications}
+            className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm"
+          >
+            啟用通知
+          </button>
+        )}
       </section>
 
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
