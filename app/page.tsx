@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState, useEffect } from "react";
 import { useMarketData } from "@/lib/useMarketData";
 import { lightStyle, regimeLabel } from "@/lib/labels";
 
@@ -9,16 +10,45 @@ function fmt(n: number) {
   return n.toPrecision(4);
 }
 
+const statusBadge: Record<string, { label: string; className: string }> = {
+  LIVE: { label: "🟢 LIVE", className: "text-bull" },
+  CONNECTING: { label: "🟡 連線中", className: "text-warn" },
+  DELAYED: { label: "🟡 DATA DELAY", className: "text-warn" },
+  ERROR: { label: "🔴 DATA ERROR", className: "text-bear" },
+};
+
 export default function Home() {
-  const { capital, capitalState, btc, eth, regime, daily, top3, dangerous, errors, loading, reload, lastUpdated } =
-    useMarketData();
+  const {
+    capital,
+    capitalState,
+    btc,
+    eth,
+    regime,
+    daily,
+    top3,
+    dangerous,
+    errors,
+    loading,
+    reload,
+    lastUpdated,
+    connectionStatus,
+  } = useMarketData();
+
+  const [clock, setClock] = useState("");
+  useEffect(() => {
+    const tick = () => setClock(new Date().toLocaleTimeString("zh-TW", { hour12: false }));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const bestOpp = top3[0];
+  const status = statusBadge[connectionStatus];
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
-      <header className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-display font-bold tracking-tight">交易決策系統</h1>
+      <header className="mb-1 flex items-center justify-between">
+        <h1 className="text-xl font-display font-bold tracking-tight">首頁</h1>
         <button
           onClick={reload}
           className="btn-primary px-3 text-xs text-subtext border border-border active:scale-95 transition"
@@ -26,6 +56,9 @@ export default function Home() {
           {loading ? "更新中" : "🔄 更新"}
         </button>
       </header>
+      <div className={`text-xs mb-4 ${status.className}`}>
+        {status.label} • {clock}
+      </div>
 
       {errors.length > 0 && (
         <div className="mb-4 rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn space-y-0.5">
