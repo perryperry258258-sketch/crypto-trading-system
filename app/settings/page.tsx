@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useMarketData } from "@/lib/useMarketData";
-import { PHASES } from "@/lib/phases";
+import { PHASES, calcPositionSize } from "@/lib/phases";
 
 const wsStatusLabel: Record<string, { label: string; className: string }> = {
   LIVE: { label: "🟢 Connected", className: "text-bull" },
@@ -28,6 +28,9 @@ export default function SettingsPage() {
   } = useMarketData();
   const [input, setInput] = useState(String(capital));
   const [now, setNow] = useState(Date.now());
+  const [calcEntry, setCalcEntry] = useState("");
+  const [calcStop, setCalcStop] = useState("");
+  const [calcRisk, setCalcRisk] = useState(String(capitalState.phase.maxRiskPct.toFixed(2)));
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -39,6 +42,14 @@ export default function SettingsPage() {
   const restOk = coins.length > 0;
   const coingeckoOk = global !== null;
   const chartOk = candidates.length > 0 || coins.length > 0; // 圖表與 dashboard 共用同一個 Binance K線來源
+
+  const entryNum = Number(calcEntry);
+  const stopNum = Number(calcStop);
+  const riskNum = Number(calcRisk);
+  const calcValid = entryNum > 0 && stopNum > 0 && stopNum !== entryNum && riskNum > 0;
+  const calcResult = calcValid
+    ? calcPositionSize({ capital, riskPct: riskNum, entryPrice: entryNum, stopLossPrice: stopNum })
+    : null;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -106,6 +117,65 @@ export default function SettingsPage() {
           >
             啟用通知
           </button>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-1">🧮 倉位計算器</div>
+        <div className="text-xs text-subtext mb-3 leading-relaxed">
+          進場價、停損價請用同一種幣別填（例如都用美金/USDT），本金預設抓你的資金，也可以自己改。
+        </div>
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <div>
+            <label className="text-[11px] text-subtext mb-1 block">進場價</label>
+            <input
+              inputMode="decimal"
+              value={calcEntry}
+              onChange={(e) => setCalcEntry(e.target.value.replace(/[^0-9.]/g, ""))}
+              placeholder="例如 102000"
+              className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm numeric-safe"
+              style={{ minHeight: 44 }}
+            />
+          </div>
+          <div>
+            <label className="text-[11px] text-subtext mb-1 block">停損價</label>
+            <input
+              inputMode="decimal"
+              value={calcStop}
+              onChange={(e) => setCalcStop(e.target.value.replace(/[^0-9.]/g, ""))}
+              placeholder="例如 98500"
+              className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm numeric-safe"
+              style={{ minHeight: 44 }}
+            />
+          </div>
+        </div>
+        <div className="mb-3">
+          <label className="text-[11px] text-subtext mb-1 block">單筆風險 %（預設為目前階段上限）</label>
+          <input
+            inputMode="decimal"
+            value={calcRisk}
+            onChange={(e) => setCalcRisk(e.target.value.replace(/[^0-9.]/g, ""))}
+            className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm numeric-safe"
+            style={{ minHeight: 44 }}
+          />
+        </div>
+        {calcResult ? (
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-xl bg-panel2 p-3">
+              <div className="text-[11px] text-subtext">建議倉位金額</div>
+              <div className="font-semibold numeric-safe text-accent">{calcResult.positionSize.toFixed(2)}</div>
+            </div>
+            <div className="rounded-xl bg-panel2 p-3">
+              <div className="text-[11px] text-subtext">最大虧損金額</div>
+              <div className="font-semibold numeric-safe text-bear">{calcResult.maxLossAmount.toFixed(2)}</div>
+            </div>
+            <div className="rounded-xl bg-panel2 p-3">
+              <div className="text-[11px] text-subtext">停損距離</div>
+              <div className="font-semibold numeric-safe">{calcResult.stopDistancePct.toFixed(2)}%</div>
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-subtext text-center py-2">填入進場價和停損價（不能相同）就會自動算</div>
         )}
       </section>
 
