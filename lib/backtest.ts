@@ -1,26 +1,36 @@
 import { Candle } from "./binance";
-import { calcStructuralStop } from "./indicators";
-import { buildIndicatorSet, computeEntryQuality } from "./scoring";
+import { buildIndicatorSet, buildOpportunity, classifyMarketRegime } from "./scoring";
+import { CoinSnapshot } from "./types";
 
-// 回測引擎（A級訊號歷史驗證版）。重要限制（誠實標註，不假造結果）：
-// 1. 只測「技術面核心邏輯」，不含市場面/情緒面即時因子（大盤狀態、恐慌貪婪指數只有現在才有資料，
-//    歷史上補不回去，不會硬湊假資料）。市場環境改用「當時的趨勢分數」概略判斷 BULL/BEAR/SIDEWAYS，
-//    跟即時系統用 Fear&Greed 的判斷方式不完全相同。
-// 2. 進場價使用「訊號K棒的下一根K棒開盤價」，不是訊號當根的收盤價，避免用還沒發生的成交價回測。
-// 3. 出場規則：同一根K棒內若同時觸及停損與TP1，保守判定為「停損優先」。
-// 4. 停損公式跟 lib/scoring.ts 即時計算完全相同（Swing Low + 動態 ATR 緩衝）。
+// 回測引擎（A級訊號歷史驗證版 v2 — 回測邏輯稽核後修正）。
+//
+// 【上一版的問題，稽核後誠實記錄】：舊版回測沒有真的呼叫 production 用的 buildOpportunity()，
+// 而是自己另外寫了一套簡化邏輯，用「趨勢分數≥65 AND 動能分數≥65」當成隱藏的第一道關卡，
+// 沒通過這關就完全不會進入 A 級判斷（連 Opportunity Score、Risk Score、Market Regime、
+// 追高判斷都沒算）。這道關卡是回測自己加的，production 即時系統完全沒有這個門檻，
+// 兩邊邏輯不一致，稽核後移除。
+//
+// 【這一版怎麼修的】：每一根K棒都直接呼叫跟 production 完全相同的 buildOpportunity()
+// 函式（用歷史當時的資料組成一個 CoinSnapshot），沒有任何額外的隱藏篩選條件，
+// 判斷邏輯保證跟你手機上看到的即時系統一致。
+//
+// 其他限制（誠實標註，不假造結果）：
+// 1. 市場面：Market Regime 用「當時的趨勢分數」判斷（跟 production 一樣的函式 classifyMarketRegime），
+//    但恐慌貪婪指數歷史上無法還原，一律視為 null（跟 production 傳入 fearGreed=null 時的行為一致）。
+// 2. 24H成交量改用「當時往前24根1H K棒的 quote volume 加總」估算，這是可以從歷史K線真實取得的資料，
+//    不是假造的。
+// 3. 進場價使用「訊號K棒的下一根K棒開盤價」，不是訊號當根的收盤價。
+// 4. 出場規則：同一根K棒內若同時觸及停損與TP1，保守判定為「停損優先」。
 // 5. 沒有 look-ahead bias：進場判斷只用訊號當時以前的資料，出場判斷只往後看未來K棒。
-// 6. 手續費與滑價分開列且可調整（預設 Fee 0.1% + Slippage 0.05%）。
-// 7. 量能分數在歷史回測中用「當根成交量 / 過去20根平均成交量」的比值當代理指標，
-//    跟即時系統用的「24H成交額分級」不是同一種算法，這點會影響 Entry Quality 的量能子項。
-// 8. ADX、VWAP 目前系統未實作，不列入計算，不假造。
-// 9. 目前只有一套統一的技術面進場規則，未拆分成具名 Setup（突破/回踩/拉回等），無法做 Setup 分類統計。
-// 10. 同一幣種若有未平倉的模擬訊號，不會產生新訊號（下一筆訊號只會在前一筆出場後才開始尋找）。
+// 6. 手續費與滑價分開列（預設 Fee 0.1% + Slippage 0.05%）。
+// 7. ADX、VWAP 目前系統未實作，不列入計算，不假造。
+// 8. 目前只有一套統一的技術面進場規則，未拆分成具名 Setup，無法做 Setup 分類統計。
+// 9. 同一幣種若有未平倉的模擬訊號，不會產生新訊號。
 
 export interface BacktestTrade {
   symbol: string;
   entryIndex: number;
-  entryTime: number; // unix seconds，實際成交（下一根K棒開盤）的時間
+  entryTime: number;
   exitTime: number;
   entryPrice: number;
   stopLoss: number;
@@ -29,13 +39,29 @@ export interface BacktestTrade {
   result: "WIN" | "LOSS" | "TIMEOUT";
   rMultiple: number;
   entryQuality: number;
+  riskScore: number;
   riskRewardRatio: number;
-  qualifiesAsA: boolean;
+  opportunityScore: number;
+  grade: "S" | "A" | "B" | "C";
   maePct: number;
   mfePct: number;
   timeToExitBars: number;
   stopDistancePct: number;
-  regimeApprox: "BULL" | "BEAR" | "SIDEWAYS";
+  regimeApprox: "BULL" | "BEAR" | "SIDEWAYS" | "EUPHORIA" | "PANIC";
+}
+
+export interface DebugStats {
+  totalBars: number;
+  evaluatedBars: number;
+  passedTrend: number;
+  passedMomentum: number;
+  passedOpportunity80: number;
+  passedEntryQuality75: number;
+  passedRiskLE40: number;
+  passedRR3: number;
+  passedRegimeOk: number;
+  passedNotChasing: number;
+  finalASignals: number;
 }
 
 export interface BacktestResult {
@@ -43,6 +69,7 @@ export interface BacktestResult {
   interval: string;
   totalBars: number;
   trades: BacktestTrade[];
+  debug: DebugStats;
 }
 
 const LOOKBACK_MIN = 60;
@@ -50,21 +77,28 @@ const INDICATOR_WINDOW = 250;
 const MAX_HOLD_BARS = 200;
 export const FEE_PCT = 0.1;
 export const SLIPPAGE_PCT = 0.05;
-const VOLUME_LOOKBACK = 20;
 
-function clamp(v: number, min = 0, max = 100) {
-  return Math.max(min, Math.min(max, v));
-}
-
-function approxRegime(trendScore: number): "BULL" | "BEAR" | "SIDEWAYS" {
-  if (trendScore >= 65) return "BULL";
-  if (trendScore <= 35) return "BEAR";
-  return "SIDEWAYS";
+function emptyDebug(totalBars: number): DebugStats {
+  return {
+    totalBars,
+    evaluatedBars: 0,
+    passedTrend: 0,
+    passedMomentum: 0,
+    passedOpportunity80: 0,
+    passedEntryQuality75: 0,
+    passedRiskLE40: 0,
+    passedRR3: 0,
+    passedRegimeOk: 0,
+    passedNotChasing: 0,
+    finalASignals: 0,
+  };
 }
 
 export function runBacktest(symbol: string, interval: string, candles: Candle[]): BacktestResult {
   const closes = candles.map((c) => c.close);
   const trades: BacktestTrade[] = [];
+  const debug = emptyDebug(candles.length);
+  const symbolDisplay = symbol.replace("USDT", "");
 
   let i = LOOKBACK_MIN;
   while (i < candles.length - 1) {
@@ -74,46 +108,60 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
       i++;
       continue;
     }
+    debug.evaluatedBars++;
 
     const ind = buildIndicatorSet(window);
-    const entrySignal = ind.trendScore >= 65 && ind.momentumScore >= 65;
+    if (ind.trendScore >= 65) debug.passedTrend++;
+    if (ind.momentumScore >= 65) debug.passedMomentum++;
 
-    if (entrySignal) {
-      // 進場價：訊號K棒的下一根開盤價（不是訊號當根收盤價），避免用還沒發生的成交價
+    // 用當時往前24根1H K棒的 quote volume 加總，估算「24H成交額」（真實歷史資料，非假造）
+    const vol24Start = Math.max(0, i - 24);
+    const volume24h = candles.slice(vol24Start, i + 1).reduce((a, c) => a + c.volume * c.close, 0);
+
+    const refIdx = Math.max(0, i - 24);
+    const change24h = closes[refIdx] > 0 ? ((closes[i] - closes[refIdx]) / closes[refIdx]) * 100 : 0;
+
+    const high24h = Math.max(...candles.slice(vol24Start, i + 1).map((c) => c.high));
+    const low24h = Math.min(...candles.slice(vol24Start, i + 1).map((c) => c.low));
+
+    const coin: CoinSnapshot = {
+      id: symbol,
+      symbol: symbolDisplay,
+      name: symbolDisplay,
+      price: closes[i],
+      change24h,
+      high24h,
+      low24h,
+      volume24h,
+    };
+
+    const regime = classifyMarketRegime(change24h, ind.trendScore, null);
+
+    // 直接呼叫跟 production 完全相同的函式，沒有任何額外的隱藏篩選條件
+    const candidate = buildOpportunity(coin, window, null, null, regime);
+
+    if (candidate.opportunityScore >= 80) debug.passedOpportunity80++;
+    if (candidate.entryQuality >= 75) debug.passedEntryQuality75++;
+    if (candidate.riskScore <= 40) debug.passedRiskLE40++;
+    if (candidate.riskRewardRatio >= 3) debug.passedRR3++;
+    if (regime !== "PANIC") debug.passedRegimeOk++;
+    if (!candidate.doNotChase) debug.passedNotChasing++;
+
+    if (candidate.grade === "A" || candidate.grade === "S") {
+      debug.finalASignals++;
+
       const entryBarIdx = i + 1;
       const price = candles[entryBarIdx].open;
-      const signalPrice = closes[i];
-
-      const stopLoss = calcStructuralStop(window, signalPrice, ind.atr14);
+      // 停損/TP1 直接用 candidate 裡（跟 production 相同函式）算好的價位，
+      // 只是實際成交價位移到下一根K棒的開盤價（避免用還沒發生的收盤價成交）
+      const stopLoss = candidate.stopLoss;
+      const tp1 = candidate.tp1;
       const riskDistance = price - stopLoss;
       if (riskDistance <= 0) {
         i++;
         continue;
       }
       const stopDistancePct = (riskDistance / price) * 100;
-      const tp1 = price + riskDistance * 1.5;
-      const riskRewardRatio = (tp1 - price) / riskDistance;
-
-      const recentHigh = Math.max(...window.slice(-20));
-      const volStart = Math.max(0, i - VOLUME_LOOKBACK);
-      const avgVol = candles.slice(volStart, i).reduce((a, c) => a + c.volume, 0) / Math.max(1, i - volStart);
-      const volRatio = avgVol > 0 ? candles[i].volume / avgVol : 1;
-      const volumeScoreLocal = volRatio >= 1.5 ? 80 : volRatio >= 1.0 ? 60 : volRatio >= 0.7 ? 45 : 30;
-
-      const refIdx = Math.max(0, i - 24);
-      const change24h = closes[refIdx] > 0 ? ((signalPrice - closes[refIdx]) / closes[refIdx]) * 100 : 0;
-
-      const entryQuality = computeEntryQuality({
-        price: signalPrice,
-        ema20: ind.ema20,
-        rsi14: ind.rsi14,
-        recentHigh,
-        riskRewardRatio,
-        volumeScore: volumeScoreLocal,
-        change24h,
-      });
-      const qualifiesAsA = entryQuality >= 75 && riskRewardRatio >= 3;
-      const regimeApprox = approxRegime(ind.trendScore);
 
       let exitIndex = Math.min(entryBarIdx + MAX_HOLD_BARS, candles.length - 1);
       let exitPrice = candles[exitIndex].close;
@@ -143,7 +191,7 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
       const mfePct = price > 0 ? Math.max(0, ((best - price) / price) * 100) : 0;
 
       const grossR = (exitPrice - price) / riskDistance;
-      const costPct = FEE_PCT + SLIPPAGE_PCT; // 來回各算一次，簡化為一次性扣除
+      const costPct = FEE_PCT + SLIPPAGE_PCT;
       const costR = (costPct / 100) * (price / riskDistance);
       const rMultiple = grossR - costR;
 
@@ -158,14 +206,16 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
         exitPrice,
         result,
         rMultiple,
-        entryQuality,
-        riskRewardRatio,
-        qualifiesAsA,
+        entryQuality: candidate.entryQuality,
+        riskScore: candidate.riskScore,
+        riskRewardRatio: candidate.riskRewardRatio,
+        opportunityScore: candidate.opportunityScore,
+        grade: candidate.grade,
         maePct,
         mfePct,
         timeToExitBars: exitIndex - entryBarIdx,
         stopDistancePct,
-        regimeApprox,
+        regimeApprox: regime,
       });
 
       i = exitIndex + 1;
@@ -174,7 +224,7 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
     i++;
   }
 
-  return { symbol, interval, totalBars: candles.length, trades };
+  return { symbol, interval, totalBars: candles.length, trades, debug };
 }
 
 export interface SignalAuditReport {
@@ -188,7 +238,7 @@ export interface SignalAuditReport {
   lossRate: number;
   avgR: number;
   profitFactor: number;
-  expectancy: number;
+  expectancy: number; // 每筆平均期望值（跟 avgR 相同定義，獨立命名對應規格書用詞）
   maxDrawdownR: number;
   maxConsecutiveLosses: number;
   avgTimeToSLHours: number;
@@ -272,10 +322,21 @@ export function stopLossVerdict(report: SignalAuditReport): { emoji: string; lab
   return { emoji: "🟢", label: "合理 — 停損距離明顯大於成功交易的正常回檔幅度" };
 }
 
+// 樣本數門檻 + 表現雙重判定（規格書 PART21/22）：
+// 樣本 <100 一律不能判定通過或不通過，只能說樣本不足；
+// 100~300 最高只能給「初步結果」（黃燈），不給綠燈；
+// >=300 才開始依 Profit Factor / Expectancy / Out-of-Sample 表現判定 🟢/🟡/🔴。
 export function gradeStrategy(
   all: SignalAuditReport,
   outOfSample: SignalAuditReport | null
 ): { emoji: string; label: string; desc: string } {
+  if (all.totalSignals === 0) {
+    return {
+      emoji: "⚠️",
+      label: "樣本不足",
+      desc: "目前沒有產生足夠的A級歷史訊號，無法驗證策略。",
+    };
+  }
   if (all.completedTrades < 100) {
     return {
       emoji: "⚠️",
@@ -314,4 +375,4 @@ export function gradeStrategy(
     label: "不通過",
     desc: `獲利因子 ${all.profitFactor.toFixed(2)}（小於1代表長期是虧的），或樣本外表現為負。`,
   };
-      }
+}
