@@ -138,23 +138,28 @@ export default function JournalPage() {
     setAuditError(null);
     setAllTrades(null);
     const collected: BacktestTrade[] = [];
-    try {
-      for (const symbol of AUDIT_SYMBOLS) {
-        setAuditProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
+    let successCount = 0;
+    for (const symbol of AUDIT_SYMBOLS) {
+      setAuditProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
+      try {
         const candles = await fetchKlinesHistory(symbol, "1h", auditDays * 24);
         if (candles.length >= 100) {
+          successCount++;
           const result = runBacktest(symbol, "1h", candles);
           collected.push(...result.trades);
         }
+      } catch {
+        // 這個幣種抓取失敗，跳過繼續抓下一個，不要讓整個驗證中斷
       }
-      if (collected.length === 0) throw new Error("no data");
-      setAllTrades(collected);
-    } catch (e) {
-      setAuditError("稽核資料取得失敗，請稍後再試（可能是 Binance API 暫時不穩定）");
-    } finally {
-      setAuditLoading(false);
-      setAuditProgress("");
     }
+    setAuditLoading(false);
+    setAuditProgress("");
+    if (successCount === 0) {
+      setAuditError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
+      return;
+    }
+    // 即使 collected 是空陣列（這段期間剛好一筆訊號都沒有），也是誠實的結果，不當成錯誤
+    setAllTrades(collected);
   };
 
   // 這份規格書定義的「A級」＝ Entry Quality≥75 且 R:R≥3（qualifiesAsA）。
@@ -183,7 +188,7 @@ export default function JournalPage() {
 
   let inSample: SignalAuditReport | null = null;
   let outOfSample: SignalAuditReport | null = null;
-  if (aGradeTrades && aGradeTrades.length > 0) {
+  if (aGradeTrades) {
     const sorted = [...aGradeTrades].sort((a, b) => a.entryTime - b.entryTime);
     const mid = Math.floor(sorted.length / 2);
     inSample = auditTrades(sorted.slice(0, mid), "樣本內（前半段）");
@@ -350,7 +355,13 @@ export default function JournalPage() {
             </div>
 
             <div className="text-xs font-semibold mb-2 text-subtext">總覽</div>
-            <AuditReportCard report={overall} />
+            {overall.totalSignals === 0 ? (
+              <div className="rounded-xl bg-panel2 p-4 text-center text-sm text-subtext mb-3">
+                💤 這 {auditDays} 天內，{AUDIT_SYMBOLS.length} 個幣種完全沒有出現符合「趨勢≥65 且 動能≥65」條件的技術面訊號。這是誠實的結果，不是程式壞掉——代表這段期間市場條件對這套規則來說不夠明確。可以換更長的期間再試一次。
+              </div>
+            ) : (
+              <AuditReportCard report={overall} />
+            )}
 
             {/* 分幣種 */}
             <details className="mb-3">
@@ -418,4 +429,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-}
+              }
