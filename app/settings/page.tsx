@@ -5,10 +5,10 @@ import { useMarketData } from "@/lib/useMarketData";
 import { PHASES, calcPositionSize } from "@/lib/phases";
 
 const wsStatusLabel: Record<string, { label: string; className: string }> = {
-  LIVE: { label: "🟢 Connected", className: "text-bull" },
-  CONNECTING: { label: "🟡 Connecting", className: "text-warn" },
-  DELAYED: { label: "🟡 Delayed", className: "text-warn" },
-  ERROR: { label: "🔴 Error", className: "text-bear" },
+  LIVE: { label: "🟢 即時連線中", className: "text-bull" },
+  CONNECTING: { label: "🟡 連線中", className: "text-warn" },
+  DELAYED: { label: "🟡 延遲", className: "text-warn" },
+  ERROR: { label: "🔴 資料異常", className: "text-bear" },
 };
 
 const RATE_KEY = "cts_usdtwd_v1";
@@ -80,31 +80,31 @@ export default function SettingsPage() {
       </header>
 
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-        <div className="text-sm font-semibold mb-3">DATA HEALTH</div>
+        <div className="text-sm font-semibold mb-3">資料健康檢查（Data Health）</div>
         <div className="space-y-2 text-xs">
           <div className="flex items-center justify-between">
-            <span className="text-subtext">Binance WebSocket</span>
+            <span className="text-subtext">Binance 即時連線（WebSocket）</span>
             <span className={ws.className}>{ws.label}</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-subtext">Binance REST（初始快照）</span>
-            <span className={restOk ? "text-bull" : "text-bear"}>{restOk ? "🟢 Working" : "🔴 No data"}</span>
+            <span className="text-subtext">Binance 資料查詢（REST，初始快照）</span>
+            <span className={restOk ? "text-bull" : "text-bear"}>{restOk ? "🟢 正常" : "🔴 無資料"}</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-subtext">CoinGecko（市值/大盤）</span>
-            <span className={coingeckoOk ? "text-bull" : "text-bear"}>{coingeckoOk ? "🟢 Working" : "🔴 Error"}</span>
+            <span className={coingeckoOk ? "text-bull" : "text-bear"}>{coingeckoOk ? "🟢 正常" : "🔴 異常"}</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-subtext">TradingView Chart（Binance K線）</span>
-            <span className={chartOk ? "text-bull" : "text-bear"}>{chartOk ? "🟢 Working" : "⚪ 尚無資料"}</span>
+            <span className="text-subtext">K線圖表（Binance）</span>
+            <span className={chartOk ? "text-bull" : "text-bear"}>{chartOk ? "🟢 正常" : "⚪ 尚無資料"}</span>
           </div>
           <div className="h-px bg-border my-2" />
           <div className="flex items-center justify-between">
-            <span className="text-subtext">Last Tick（Binance WS）</span>
+            <span className="text-subtext">最後收到報價時間</span>
             <span className="numeric-safe">{lastTickAt ? lastTickAt.toLocaleTimeString() : "—"}</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-subtext">Data Latency</span>
+            <span className="text-subtext">資料延遲</span>
             <span className="numeric-safe">{tickAgeMs !== null ? `${tickAgeMs.toLocaleString()} ms` : "—"}</span>
           </div>
           <div className="flex items-center justify-between">
@@ -275,4 +275,4 @@ export default function SettingsPage() {
       </section>
     </main>
   );
-          }
+}
