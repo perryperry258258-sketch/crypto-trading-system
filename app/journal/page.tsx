@@ -10,6 +10,7 @@ import {
   gradeStrategy,
   BacktestTrade,
   SignalAuditReport,
+  DebugStats,
   FEE_PCT,
   SLIPPAGE_PCT,
 } from "@/lib/backtest";
@@ -123,6 +124,32 @@ function AuditReportCard({ report }: { report: SignalAuditReport }) {
   );
 }
 
+function DebugStatsPanel({ d }: { d: DebugStats }) {
+  const rows: [string, number][] = [
+    ["歷史K線總數", d.totalBars],
+    ["有效可計算指標的K線", d.evaluatedBars],
+    ["通過趨勢條件(≥65)", d.passedTrend],
+    ["通過動能條件(≥65)", d.passedMomentum],
+    ["通過 Opportunity ≥80", d.passedOpportunity80],
+    ["通過 Entry Quality ≥75", d.passedEntryQuality75],
+    ["通過 Risk ≤40", d.passedRiskLE40],
+    ["通過 R:R ≥3", d.passedRR3],
+    ["通過 Market Regime", d.passedRegimeOk],
+    ["通過「不是追高」", d.passedNotChasing],
+    ["最終A級訊號", d.finalASignals],
+  ];
+  return (
+    <div className="space-y-1">
+      {rows.map(([label, val]) => (
+        <div key={label} className="flex items-center justify-between text-xs rounded-lg bg-panel px-3 py-1.5">
+          <span className="text-subtext">{label}</span>
+          <span className="numeric-safe font-semibold">{val.toLocaleString()}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
   const [auditDays, setAuditDays] = useState(180);
@@ -130,6 +157,7 @@ export default function JournalPage() {
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditProgress, setAuditProgress] = useState("");
   const [allTrades, setAllTrades] = useState<BacktestTrade[] | null>(null);
+  const [debugTotals, setDebugTotals] = useState<DebugStats | null>(null);
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
@@ -137,7 +165,21 @@ export default function JournalPage() {
     setAuditLoading(true);
     setAuditError(null);
     setAllTrades(null);
+    setDebugTotals(null);
     const collected: BacktestTrade[] = [];
+    const debugSum: DebugStats = {
+      totalBars: 0,
+      evaluatedBars: 0,
+      passedTrend: 0,
+      passedMomentum: 0,
+      passedOpportunity80: 0,
+      passedEntryQuality75: 0,
+      passedRiskLE40: 0,
+      passedRR3: 0,
+      passedRegimeOk: 0,
+      passedNotChasing: 0,
+      finalASignals: 0,
+    };
     let successCount = 0;
     for (const symbol of AUDIT_SYMBOLS) {
       setAuditProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
@@ -147,6 +189,9 @@ export default function JournalPage() {
           successCount++;
           const result = runBacktest(symbol, "1h", candles);
           collected.push(...result.trades);
+          (Object.keys(debugSum) as (keyof DebugStats)[]).forEach((k) => {
+            debugSum[k] += result.debug[k];
+          });
         }
       } catch {
         // 這個幣種抓取失敗，跳過繼續抓下一個，不要讓整個驗證中斷
@@ -160,12 +205,12 @@ export default function JournalPage() {
     }
     // 即使 collected 是空陣列（這段期間剛好一筆訊號都沒有），也是誠實的結果，不當成錯誤
     setAllTrades(collected);
+    setDebugTotals(debugSum);
   };
 
-  // 這份規格書定義的「A級」＝ Entry Quality≥75 且 R:R≥3（qualifiesAsA）。
-  // Opportunity Score / Risk Score 的完整門檻無法在歷史回測中 100% 還原（即時系統那兩項
-  // 依賴當下的市場面/情緒面/24H真實成交額，歷史上補不回去），這點誠實揭露在下面的說明區塊。
-  const aGradeTrades = allTrades ? allTrades.filter((t) => t.qualifiesAsA) : null;
+  // runBacktest() 內部已經直接呼叫跟 production 相同的 buildOpportunity()，
+  // 回傳的 trades 陣列本身就只包含真正判定為 A/S 級的訊號，這裡不需要再另外篩選一次。
+  const aGradeTrades = allTrades;
   const overall = aGradeTrades ? auditTrades(aGradeTrades, "全部A級訊號") : null;
 
   const perSymbol = aGradeTrades
@@ -301,8 +346,9 @@ export default function JournalPage() {
         <div className="text-sm font-semibold mb-1">🏆 A級策略歷史驗證</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
           資料來源：Binance Historical Klines（不是 Mock/Sample/Demo/Static/Hardcoded）。用 {AUDIT_SYMBOLS.length}{" "}
-          個主流幣種的 1小時K線，重新在「當時」計算指標與 A 級條件（Entry Quality≥75 且 R:R≥3），進場價用訊號下一根K棒的開盤價，手續費 {FEE_PCT}% + 滑價 {SLIPPAGE_PCT}%
-          已扣除。
+          個主流幣種的 1小時K線，在「當時」直接呼叫跟 production 完全相同的判斷函式（Opportunity Score≥80 且 Entry
+          Quality≥75 且 Risk Score≤40 且 R:R≥3 且 Market Regime允許 且 不是追高），進場價用訊號下一根K棒的開盤價，手續費{" "}
+          {FEE_PCT}% + 滑價 {SLIPPAGE_PCT}% 已扣除。
         </div>
         <details className="text-[11px] text-subtext mb-3">
           <summary className="cursor-pointer select-none">這份驗證沒做到什麼（誠實揭露）▾</summary>
@@ -311,9 +357,8 @@ export default function JournalPage() {
             <li>沒有分 Setup（突破／回踩／拉回等）統計——系統目前只有一套統一規則，沒有具名策略分類器</li>
             <li>沒有 ADX、VWAP 指標——系統尚未實作，不假造</li>
             <li>沒有 Funding Rate、Open Interest 資料——歷史上不易取得，不假造，不列入評分</li>
-            <li>市場環境（BULL/BEAR/SIDEWAYS）用當時的趨勢分數概略判斷，跟即時系統用恐慌貪婪指數的判斷方式不完全相同</li>
+            <li>恐慌貪婪指數歷史上無法還原，一律視為 null（跟 production 沒有情緒面資料時的行為一致）</li>
             <li>Walk-Forward 簡化為「前半段／後半段」比較，不是完整的三段訓練/驗證/樣本外切分</li>
-            <li>Opportunity Score／Risk Score 無法完整還原（依賴即時才有的市場面資料），A級判定只用 Entry Quality 與 R:R 兩項近似</li>
           </ul>
         </details>
 
@@ -354,10 +399,20 @@ export default function JournalPage() {
               <div className="text-xs text-text leading-relaxed">{grade.desc}</div>
             </div>
 
+            {/* Debug Statistics */}
+            {debugTotals && (
+              <details className="mb-3">
+                <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                  Debug Statistics（逐關卡篩選數字）▾
+                </summary>
+                <DebugStatsPanel d={debugTotals} />
+              </details>
+            )}
+
             <div className="text-xs font-semibold mb-2 text-subtext">總覽</div>
             {overall.totalSignals === 0 ? (
               <div className="rounded-xl bg-panel2 p-4 text-center text-sm text-subtext mb-3">
-                💤 這 {auditDays} 天內，{AUDIT_SYMBOLS.length} 個幣種完全沒有出現符合「趨勢≥65 且 動能≥65」條件的技術面訊號。這是誠實的結果，不是程式壞掉——代表這段期間市場條件對這套規則來說不夠明確。可以換更長的期間再試一次。
+                目前沒有產生足夠的A級歷史訊號，無法驗證策略。展開上面的 Debug Statistics 可以看到是哪一關卡把訊號篩掉的。
               </div>
             ) : (
               <AuditReportCard report={overall} />
@@ -429,4 +484,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-              }
+}
