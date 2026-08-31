@@ -2,20 +2,25 @@ import { Candle } from "./binance";
 import { calcStructuralStop } from "./indicators";
 import { buildIndicatorSet, computeEntryQuality } from "./scoring";
 
-// 回測引擎（Signal Failure Audit 版）。重要限制（誠實標註，不假造結果）：
-// 1. 只測「技術面核心邏輯」，不含市場面/情緒面（大盤狀態、恐慌貪婪指數只有現在才有資料，
-//    歷史上補不回去，不會硬湊假資料）。
-// 2. 出場規則：同一根K棒內若同時觸及停損與TP1，保守判定為「停損優先」（符合稽核要求）。
-// 3. 停損公式跟 lib/scoring.ts 即時計算完全相同（Swing Low + 動態 ATR 緩衝）。
-// 4. 沒有 look-ahead bias：第 i 根K棒的進場判斷只用 closes[0..i]，出場判斷只往後看未來K棒。
-// 5. 假設每筆交易來回手續費+滑價共 0.15%，從報酬中扣除。
-// 6. 量能分數在歷史回測中用「當根成交量 / 過去20根平均成交量」的比值當代理指標，
-//    跟即時系統用的「24H成交額分級」不是同一種算法（historical volume 沒有 24H USDT 成交額可用），
-//    這點會影響 Entry Quality 的量能子項，誠實標註在此。
+// 回測引擎（A級訊號歷史驗證版）。重要限制（誠實標註，不假造結果）：
+// 1. 只測「技術面核心邏輯」，不含市場面/情緒面即時因子（大盤狀態、恐慌貪婪指數只有現在才有資料，
+//    歷史上補不回去，不會硬湊假資料）。市場環境改用「當時的趨勢分數」概略判斷 BULL/BEAR/SIDEWAYS，
+//    跟即時系統用 Fear&Greed 的判斷方式不完全相同。
+// 2. 進場價使用「訊號K棒的下一根K棒開盤價」，不是訊號當根的收盤價，避免用還沒發生的成交價回測。
+// 3. 出場規則：同一根K棒內若同時觸及停損與TP1，保守判定為「停損優先」。
+// 4. 停損公式跟 lib/scoring.ts 即時計算完全相同（Swing Low + 動態 ATR 緩衝）。
+// 5. 沒有 look-ahead bias：進場判斷只用訊號當時以前的資料，出場判斷只往後看未來K棒。
+// 6. 手續費與滑價分開列且可調整（預設 Fee 0.1% + Slippage 0.05%）。
+// 7. 量能分數在歷史回測中用「當根成交量 / 過去20根平均成交量」的比值當代理指標，
+//    跟即時系統用的「24H成交額分級」不是同一種算法，這點會影響 Entry Quality 的量能子項。
+// 8. ADX、VWAP 目前系統未實作，不列入計算，不假造。
+// 9. 目前只有一套統一的技術面進場規則，未拆分成具名 Setup（突破/回踩/拉回等），無法做 Setup 分類統計。
+// 10. 同一幣種若有未平倉的模擬訊號，不會產生新訊號（下一筆訊號只會在前一筆出場後才開始尋找）。
 
 export interface BacktestTrade {
+  symbol: string;
   entryIndex: number;
-  entryTime: number; // unix seconds
+  entryTime: number; // unix seconds，實際成交（下一根K棒開盤）的時間
   exitTime: number;
   entryPrice: number;
   stopLoss: number;
@@ -25,11 +30,12 @@ export interface BacktestTrade {
   rMultiple: number;
   entryQuality: number;
   riskRewardRatio: number;
-  qualifiesAsA: boolean; // 是否符合新版 A 級的四道關卡（Entry Quality/R:R 門檻，市場面因子回測無法還原故不列入）
-  maePct: number; // Maximum Adverse Excursion：出場前價格最不利時，相對進場價的百分比（正數）
-  mfePct: number; // Maximum Favorable Excursion：出場前價格最有利時，相對進場價的百分比（正數）
-  timeToExitBars: number; // 進場到出場經過幾根K棒
+  qualifiesAsA: boolean;
+  maePct: number;
+  mfePct: number;
+  timeToExitBars: number;
   stopDistancePct: number;
+  regimeApprox: "BULL" | "BEAR" | "SIDEWAYS";
 }
 
 export interface BacktestResult {
@@ -42,21 +48,26 @@ export interface BacktestResult {
 const LOOKBACK_MIN = 60;
 const INDICATOR_WINDOW = 250;
 const MAX_HOLD_BARS = 200;
-const FEE_SLIPPAGE_PCT = 0.15;
+export const FEE_PCT = 0.1;
+export const SLIPPAGE_PCT = 0.05;
 const VOLUME_LOOKBACK = 20;
 
 function clamp(v: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, v));
 }
 
-// 執行單一幣種的技術面訊號回測。broad trigger（trend+momentum）用來取得足夠樣本數，
-// 每筆交易另外標註 qualifiesAsA，讓稽核報告可以比較「全部技術面訊號」vs「符合新版A級門檻」的表現差異。
+function approxRegime(trendScore: number): "BULL" | "BEAR" | "SIDEWAYS" {
+  if (trendScore >= 65) return "BULL";
+  if (trendScore <= 35) return "BEAR";
+  return "SIDEWAYS";
+}
+
 export function runBacktest(symbol: string, interval: string, candles: Candle[]): BacktestResult {
   const closes = candles.map((c) => c.close);
   const trades: BacktestTrade[] = [];
 
   let i = LOOKBACK_MIN;
-  while (i < candles.length) {
+  while (i < candles.length - 1) {
     const windowStart = Math.max(0, i - INDICATOR_WINDOW);
     const window = closes.slice(windowStart, i + 1);
     if (window.length < LOOKBACK_MIN) {
@@ -68,25 +79,32 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
     const entrySignal = ind.trendScore >= 65 && ind.momentumScore >= 65;
 
     if (entrySignal) {
-      const price = closes[i];
-      const stopLoss = calcStructuralStop(window, price, ind.atr14);
+      // 進場價：訊號K棒的下一根開盤價（不是訊號當根收盤價），避免用還沒發生的成交價
+      const entryBarIdx = i + 1;
+      const price = candles[entryBarIdx].open;
+      const signalPrice = closes[i];
+
+      const stopLoss = calcStructuralStop(window, signalPrice, ind.atr14);
       const riskDistance = price - stopLoss;
+      if (riskDistance <= 0) {
+        i++;
+        continue;
+      }
       const stopDistancePct = (riskDistance / price) * 100;
       const tp1 = price + riskDistance * 1.5;
-      const riskRewardRatio = riskDistance > 0 ? (tp1 - price) / riskDistance : 0;
+      const riskRewardRatio = (tp1 - price) / riskDistance;
 
       const recentHigh = Math.max(...window.slice(-20));
       const volStart = Math.max(0, i - VOLUME_LOOKBACK);
-      const avgVol =
-        candles.slice(volStart, i).reduce((a, c) => a + c.volume, 0) / Math.max(1, i - volStart);
+      const avgVol = candles.slice(volStart, i).reduce((a, c) => a + c.volume, 0) / Math.max(1, i - volStart);
       const volRatio = avgVol > 0 ? candles[i].volume / avgVol : 1;
       const volumeScoreLocal = volRatio >= 1.5 ? 80 : volRatio >= 1.0 ? 60 : volRatio >= 0.7 ? 45 : 30;
 
       const refIdx = Math.max(0, i - 24);
-      const change24h = closes[refIdx] > 0 ? ((price - closes[refIdx]) / closes[refIdx]) * 100 : 0;
+      const change24h = closes[refIdx] > 0 ? ((signalPrice - closes[refIdx]) / closes[refIdx]) * 100 : 0;
 
       const entryQuality = computeEntryQuality({
-        price,
+        price: signalPrice,
         ema20: ind.ema20,
         rsi14: ind.rsi14,
         recentHigh,
@@ -95,18 +113,18 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
         change24h,
       });
       const qualifiesAsA = entryQuality >= 75 && riskRewardRatio >= 3;
+      const regimeApprox = approxRegime(ind.trendScore);
 
-      let exitIndex = Math.min(i + MAX_HOLD_BARS, candles.length - 1);
+      let exitIndex = Math.min(entryBarIdx + MAX_HOLD_BARS, candles.length - 1);
       let exitPrice = candles[exitIndex].close;
       let result: BacktestTrade["result"] = "TIMEOUT";
-      let worst = price; // MAE 追蹤：出場前碰過的最低價
-      let best = price; // MFE 追蹤：出場前碰過的最高價
+      let worst = price;
+      let best = price;
 
-      for (let j = i + 1; j < Math.min(i + 1 + MAX_HOLD_BARS, candles.length); j++) {
+      for (let j = entryBarIdx; j < Math.min(entryBarIdx + MAX_HOLD_BARS, candles.length); j++) {
         const bar = candles[j];
         if (bar.low < worst) worst = bar.low;
         if (bar.high > best) best = bar.high;
-        // 保守判定：同一根K棒同時觸及停損與TP1，一律判定停損優先
         if (bar.low <= stopLoss) {
           exitIndex = j;
           exitPrice = stopLoss;
@@ -124,13 +142,15 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
       const maePct = price > 0 ? Math.max(0, ((price - worst) / price) * 100) : 0;
       const mfePct = price > 0 ? Math.max(0, ((best - price) / price) * 100) : 0;
 
-      const grossR = riskDistance > 0 ? (exitPrice - price) / riskDistance : 0;
-      const feeR = riskDistance > 0 ? (FEE_SLIPPAGE_PCT / 100) * (price / riskDistance) : 0;
-      const rMultiple = grossR - feeR;
+      const grossR = (exitPrice - price) / riskDistance;
+      const costPct = FEE_PCT + SLIPPAGE_PCT; // 來回各算一次，簡化為一次性扣除
+      const costR = (costPct / 100) * (price / riskDistance);
+      const rMultiple = grossR - costR;
 
       trades.push({
-        entryIndex: i,
-        entryTime: candles[i].time,
+        symbol,
+        entryIndex: entryBarIdx,
+        entryTime: candles[entryBarIdx].time,
         exitTime: candles[exitIndex].time,
         entryPrice: price,
         stopLoss,
@@ -143,11 +163,12 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
         qualifiesAsA,
         maePct,
         mfePct,
-        timeToExitBars: exitIndex - i,
+        timeToExitBars: exitIndex - entryBarIdx,
         stopDistancePct,
+        regimeApprox,
       });
 
-      i = exitIndex + 1; // 出場後才找下一筆訊號，一次只模擬一筆部位
+      i = exitIndex + 1;
       continue;
     }
     i++;
@@ -159,15 +180,17 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
 export interface SignalAuditReport {
   label: string;
   totalSignals: number;
-  completedTrades: number; // TP先到 + SL先到，不含未觸發（勝率的正確分母）
+  completedTrades: number;
   tpFirst: number;
   slFirst: number;
   timeout: number;
-  winRate: number; // 已完成交易的勝率（TP先到 / 已完成），不把未觸發訊號算進分母
+  winRate: number;
   lossRate: number;
   avgR: number;
   profitFactor: number;
+  expectancy: number;
   maxDrawdownR: number;
+  maxConsecutiveLosses: number;
   avgTimeToSLHours: number;
   avgTimeToTPHours: number;
   avgMAEWinners: number;
@@ -184,8 +207,6 @@ export function auditTrades(trades: BacktestTrade[], label: string): SignalAudit
   const timeouts = trades.filter((t) => t.result === "TIMEOUT");
   const completedTrades = winners.length + losers.length;
 
-  // 勝率只計算「已經觸發停損或TP1」的交易，未觸發（TIMEOUT）不計入分母，
-  // 否則會把「還沒分出勝負」的訊號當成拉低勝率的分母，誤導判讀。
   const winRate = completedTrades ? (winners.length / completedTrades) * 100 : 0;
   const lossRate = completedTrades ? (losers.length / completedTrades) * 100 : 0;
   const avgR = total ? trades.reduce((a, t) => a + t.rMultiple, 0) / total : 0;
@@ -196,11 +217,19 @@ export function auditTrades(trades: BacktestTrade[], label: string): SignalAudit
   let cum = 0;
   let peak = 0;
   let maxDD = 0;
+  let consecLoss = 0;
+  let maxConsecLoss = 0;
   trades.forEach((t) => {
     cum += t.rMultiple;
     if (cum > peak) peak = cum;
     const dd = peak - cum;
     if (dd > maxDD) maxDD = dd;
+    if (t.result === "LOSS") {
+      consecLoss++;
+      if (consecLoss > maxConsecLoss) maxConsecLoss = consecLoss;
+    } else if (t.result === "WIN") {
+      consecLoss = 0;
+    }
   });
 
   const avgTimeToSLHours = losers.length ? losers.reduce((a, t) => a + t.timeToExitBars, 0) / losers.length : 0;
@@ -222,7 +251,9 @@ export function auditTrades(trades: BacktestTrade[], label: string): SignalAudit
     lossRate,
     avgR,
     profitFactor,
+    expectancy: avgR,
     maxDrawdownR: maxDD,
+    maxConsecutiveLosses: maxConsecLoss,
     avgTimeToSLHours,
     avgTimeToTPHours,
     avgMAEWinners,
@@ -240,3 +271,47 @@ export function stopLossVerdict(report: SignalAuditReport): { emoji: string; lab
   if (ratio >= 0.5) return { emoji: "🟡", label: "偏窄 — 有一定比例的正常回檔可能誤觸停損" };
   return { emoji: "🟢", label: "合理 — 停損距離明顯大於成功交易的正常回檔幅度" };
 }
+
+export function gradeStrategy(
+  all: SignalAuditReport,
+  outOfSample: SignalAuditReport | null
+): { emoji: string; label: string; desc: string } {
+  if (all.completedTrades < 100) {
+    return {
+      emoji: "⚠️",
+      label: "樣本不足",
+      desc: `已完成交易只有 ${all.completedTrades} 筆（門檻 100 筆），不足以判斷策略是否有效。`,
+    };
+  }
+  if (all.completedTrades < 300) {
+    const positive = all.profitFactor >= 1.3 && all.avgR > 0;
+    return {
+      emoji: "🟡",
+      label: positive ? "初步結果（偏正向）" : "初步結果",
+      desc: `已完成交易 ${all.completedTrades} 筆，介於 100～300 之間，只能算初步結果，還不到有統計參考價值的門檻（300筆）。`,
+    };
+  }
+
+  const oosOk = !outOfSample || outOfSample.completedTrades < 20 || outOfSample.profitFactor >= 1.0;
+  if (all.profitFactor > 1.3 && all.avgR > 0 && oosOk) {
+    return {
+      emoji: "🟢",
+      label: "通過",
+      desc: `已完成交易 ${all.completedTrades} 筆（開始具有統計參考價值），獲利因子 ${all.profitFactor.toFixed(
+        2
+      )}，樣本外（後半段）表現${oosOk ? "沒有明顯惡化" : ""}。但仍不能保證未來一定有效。`,
+    };
+  }
+  if (all.profitFactor >= 1.0) {
+    return {
+      emoji: "🟡",
+      label: "尚不足",
+      desc: `獲利因子 ${all.profitFactor.toFixed(2)}，接近打平或樣本外表現轉弱，證據還不夠充分。`,
+    };
+  }
+  return {
+    emoji: "🔴",
+    label: "不通過",
+    desc: `獲利因子 ${all.profitFactor.toFixed(2)}（小於1代表長期是虧的），或樣本外表現為負。`,
+  };
+      }
