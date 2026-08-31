@@ -87,7 +87,7 @@ export default function OpportunityCard({ c }: { c: OpportunityCandidate }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 text-center text-xs">
+          <div className="grid grid-cols-4 gap-2 text-center text-xs">
             <div>
               <div className="text-subtext">Trend</div>
               <div className="font-mono">{c.indicators.trendScore.toFixed(0)}</div>
@@ -99,6 +99,12 @@ export default function OpportunityCard({ c }: { c: OpportunityCandidate }) {
             <div>
               <div className="text-subtext">Volume</div>
               <div className="font-mono">{c.indicators.volumeScore.toFixed(0)}</div>
+            </div>
+            <div>
+              <div className="text-subtext">Entry</div>
+              <div className={`font-mono ${c.entryQuality >= 75 ? "text-bull" : c.entryQuality < 60 ? "text-bear" : ""}`}>
+                {c.entryQuality.toFixed(0)}
+              </div>
             </div>
           </div>
 
