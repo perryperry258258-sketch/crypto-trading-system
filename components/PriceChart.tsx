@@ -201,7 +201,7 @@ export default function PriceChart({ symbol, plan }: { symbol: string; plan?: Tr
       {error && <div className="text-xs text-warn mt-2">⚠️ {error}</div>}
 
       <div className="flex items-center justify-between mt-2 text-[11px] text-subtext">
-        <span>SOURCE: Binance</span>
+        <span>資料來源：Binance</span>
         <span>
           {loading
             ? "載入中…"
