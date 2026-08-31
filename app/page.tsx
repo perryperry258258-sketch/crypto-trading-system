@@ -11,10 +11,10 @@ function fmt(n: number) {
 }
 
 const statusBadge: Record<string, { label: string; className: string }> = {
-  LIVE: { label: "🟢 LIVE", className: "text-bull" },
+  LIVE: { label: "🟢 即時（Live）", className: "text-bull" },
   CONNECTING: { label: "🟡 連線中", className: "text-warn" },
-  DELAYED: { label: "🟡 DATA DELAY", className: "text-warn" },
-  ERROR: { label: "🔴 DATA ERROR", className: "text-bear" },
+  DELAYED: { label: "🟡 延遲（Delayed）", className: "text-warn" },
+  ERROR: { label: "🔴 資料異常（Data Error）", className: "text-bear" },
 };
 
 export default function Home() {
@@ -184,7 +184,7 @@ export default function Home() {
       </div>
 
       <footer className="text-center text-[11px] text-subtext pb-4">
-        {lastUpdated ? `Updated: ${lastUpdated.toLocaleString()}` : "尚未更新"}
+        {lastUpdated ? `更新時間：${lastUpdated.toLocaleString()}` : "尚未更新"}
         <div className="mt-2 leading-relaxed opacity-70">本系統僅供決策參考，不構成投資建議，不保證獲利。</div>
       </footer>
     </main>
