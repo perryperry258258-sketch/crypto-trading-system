@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useMarketData } from "@/lib/useMarketData";
 import { fetchKlinesHistory } from "@/lib/binance";
-import { runBacktest, BacktestResult } from "@/lib/backtest";
+import { runBacktest, auditTrades, stopLossVerdict, BacktestTrade, SignalAuditReport } from "@/lib/backtest";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -25,76 +25,105 @@ const lockLabel: Record<string, { label: string; note: string; className: string
   },
 };
 
-const BACKTEST_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"];
+const AUDIT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT"];
+const AUDIT_BARS_PER_SYMBOL = 1200; // 約 50 天／幣種
 
 function fmt(n: number) {
   if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return n.toPrecision(4);
 }
 
-function getVerdict(r: BacktestResult) {
-  if (r.totalTrades < 5) {
-    return {
-      emoji: "🤷",
-      label: "交易次數太少",
-      sentence: "測試期間出現的訊號太少，這個結果還不夠可靠，先不下結論。",
-      className: "text-subtext",
-    };
-  }
-  if (r.profitFactor >= 1.3 && r.avgR > 0) {
-    return {
-      emoji: "🙂",
-      label: "過去表現：有優勢",
-      sentence: "這段期間如果照這套邏輯交易，賺的時候賺得比賠的時候賠得多，整體是正的。",
-      className: "text-bull",
-    };
-  }
-  if (r.profitFactor >= 1.0) {
-    return {
-      emoji: "😐",
-      label: "過去表現：大致打平",
-      sentence: "賺賠差不多，還看不出明顯優勢，不算穩定可靠。",
-      className: "text-warn",
-    };
-  }
-  return {
-    emoji: "😕",
-    label: "過去表現：偏虧",
-    sentence: "這段期間如果照這套邏輯交易，長期是虧錢的。",
-    className: "text-bear",
-  };
-}
-
-// 簡單試算：假設每筆只冒 1% 風險，把一連串 R 倍數換算成本金變化百分比
-function simpleReturnPct(trades: BacktestResult["trades"], riskPct: number = 1) {
-  const multiplier = trades.reduce((acc, t) => acc * (1 + (t.rMultiple * riskPct) / 100), 1);
-  return (multiplier - 1) * 100;
+function AuditReportCard({ report }: { report: SignalAuditReport }) {
+  return (
+    <div className="rounded-xl bg-panel2 p-3 mb-3">
+      <div className="text-xs font-semibold mb-2">{report.label}</div>
+      <div className="grid grid-cols-3 gap-2 text-center text-xs mb-2">
+        <div>
+          <div className="text-subtext">總訊號數</div>
+          <div className="font-semibold numeric-safe">{report.totalSignals}</div>
+        </div>
+        <div>
+          <div className="text-subtext">TP先到</div>
+          <div className="font-semibold numeric-safe text-bull">{report.tpFirst}</div>
+        </div>
+        <div>
+          <div className="text-subtext">SL先到</div>
+          <div className="font-semibold numeric-safe text-bear">{report.slFirst}</div>
+        </div>
+        <div>
+          <div className="text-subtext">未觸發</div>
+          <div className="font-semibold numeric-safe">{report.timeout}</div>
+        </div>
+        <div>
+          <div className="text-subtext">勝率</div>
+          <div className="font-semibold numeric-safe">{report.winRate.toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">平均R</div>
+          <div className={`font-semibold numeric-safe ${report.avgR >= 0 ? "text-bull" : "text-bear"}`}>
+            {report.avgR.toFixed(2)}
+          </div>
+        </div>
+        <div>
+          <div className="text-subtext">Profit Factor</div>
+          <div className="font-semibold numeric-safe">
+            {report.profitFactor === Infinity ? "∞" : report.profitFactor.toFixed(2)}
+          </div>
+        </div>
+        <div>
+          <div className="text-subtext">最大回撤</div>
+          <div className="font-semibold numeric-safe text-bear">-{report.maxDrawdownR.toFixed(2)}R</div>
+        </div>
+        <div>
+          <div className="text-subtext">平均到SL</div>
+          <div className="font-semibold numeric-safe">{report.avgTimeToSLHours.toFixed(0)}h</div>
+        </div>
+      </div>
+      <div className="text-[10px] text-subtext">平均到TP時間：{report.avgTimeToTPHours.toFixed(0)} 小時</div>
+    </div>
+  );
 }
 
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
-  const [btSymbol, setBtSymbol] = useState("BTCUSDT");
-  const [btLoading, setBtLoading] = useState(false);
-  const [btError, setBtError] = useState<string | null>(null);
-  const [btResult, setBtResult] = useState<BacktestResult | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditProgress, setAuditProgress] = useState("");
+  const [allTrades, setAllTrades] = useState<BacktestTrade[] | null>(null);
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
-  const runTest = async () => {
-    setBtLoading(true);
-    setBtError(null);
-    setBtResult(null);
+  const runAudit = async () => {
+    setAuditLoading(true);
+    setAuditError(null);
+    setAllTrades(null);
+    const collected: BacktestTrade[] = [];
     try {
-      const candles = await fetchKlinesHistory(btSymbol, "1h", 1500);
-      if (candles.length < 100) throw new Error("歷史資料不足");
-      const result = runBacktest(btSymbol, "1h", candles);
-      setBtResult(result);
+      for (const symbol of AUDIT_SYMBOLS) {
+        setAuditProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
+        const candles = await fetchKlinesHistory(symbol, "1h", AUDIT_BARS_PER_SYMBOL);
+        if (candles.length >= 100) {
+          const result = runBacktest(symbol, "1h", candles);
+          collected.push(...result.trades);
+        }
+      }
+      if (collected.length === 0) throw new Error("no data");
+      setAllTrades(collected);
     } catch (e) {
-      setBtError("回測資料取得失敗，請稍後再試");
+      setAuditError("稽核資料取得失敗，請稍後再試（可能是 Binance API 暫時不穩定）");
     } finally {
-      setBtLoading(false);
+      setAuditLoading(false);
+      setAuditProgress("");
     }
   };
+
+  const auditAll = allTrades ? auditTrades(allTrades, "全部技術面訊號（趨勢+動能）") : null;
+  const strictTrades = allTrades ? allTrades.filter((t) => t.qualifiesAsA) : null;
+  const auditStrict = strictTrades ? auditTrades(strictTrades, "符合新版A級標準（Entry Quality≥75 且 R:R≥3）") : null;
+  const slVerdict = auditAll ? stopLossVerdict(auditAll) : null;
+
+  const noEdgeYet =
+    auditStrict !== null && (auditStrict.totalSignals < 20 || auditStrict.profitFactor < 1);
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -115,7 +144,8 @@ export default function JournalPage() {
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">📈 模擬交易（Paper Trading）績效</div>
         <div className="text-xs text-subtext mb-3 leading-relaxed">
-          系統偵測到 S/A 級機會會自動開立模擬部位，不動用真錢。只認「碰到 TP1」或「碰到停損」兩種結果。
+          系統偵測到 S/A 級機會會自動開立模擬部位，不動用真錢。只認「碰到 TP1」或「碰到停損」兩種結果。停損公式已於
+          Signal Failure Audit 後改為「Swing Low + 動態 ATR 緩衝」，此時間點之前的紀錄是用舊公式產生的，不能直接比較。
         </div>
         {paperStats.totalTrades === 0 ? (
           <div className="text-sm text-subtext text-center py-2">尚無已平倉的模擬交易紀錄</div>
@@ -195,117 +225,78 @@ export default function JournalPage() {
         </section>
       )}
 
-      {/* 回測 */}
+      {/* Signal Failure Audit */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-        <div className="text-sm font-semibold mb-1">🔬 歷史回測（Backtest）</div>
+        <div className="text-sm font-semibold mb-1">🔍 Signal Failure Audit</div>
         <div className="text-xs text-subtext mb-3 leading-relaxed">
-          用過去約 60 天的 1小時K線，測試「趨勢+動能」這組技術面核心進場邏輯。不含市場面／情緒面／量能面（那些只有現在才有資料，歷史上補不回去，不會硬湊假資料）。已扣除假設 0.15% 的手續費/滑價。
+          用 {AUDIT_SYMBOLS.length} 個主流幣種、每個約 {Math.round(AUDIT_BARS_PER_SYMBOL / 24)} 天的 1小時K線，一起跑技術面訊號，
+          統計「先碰到停損」還是「先碰到TP1」（同根K棒兩者都觸及時，保守判定為停損優先），並比較「全部技術面訊號」跟「符合新版A級標準」兩組表現差異。
+          市場面／情緒面因子歷史上補不回去，不列入回測。
         </div>
-        <div className="flex gap-2 mb-3">
-          <select
-            value={btSymbol}
-            onChange={(e) => setBtSymbol(e.target.value)}
-            className="flex-1 min-w-0 bg-panel2 border border-border rounded-xl px-3 text-sm"
-            style={{ minHeight: 44 }}
-          >
-            {BACKTEST_SYMBOLS.map((s) => (
-              <option key={s} value={s}>
-                {s.replace("USDT", "")}
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={runTest}
-            disabled={btLoading}
-            className="btn-primary px-4 bg-accent/20 text-accent border border-accent/40 text-sm shrink-0"
-          >
-            {btLoading ? "執行中…" : "執行回測"}
-          </button>
-        </div>
+        <button
+          onClick={runAudit}
+          disabled={auditLoading}
+          className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
+        >
+          {auditLoading ? auditProgress || "執行中…" : "執行完整稽核（約需 30-60 秒）"}
+        </button>
 
-        {btError && <div className="text-xs text-warn mb-2">⚠️ {btError}</div>}
+        {auditError && <div className="text-xs text-warn mb-2">⚠️ {auditError}</div>}
 
-        {btResult && (
+        {auditAll && auditStrict && slVerdict && (
           <div>
-            {(() => {
-              const verdict = getVerdict(btResult);
-              const simpleReturn = simpleReturnPct(btResult.trades, 1);
-              return (
-                <>
-                  <div className={`rounded-xl bg-panel2 p-3 mb-3`}>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xl">{verdict.emoji}</span>
-                      <span className={`text-sm font-semibold ${verdict.className}`}>{verdict.label}</span>
-                    </div>
-                    <div className="text-sm text-text leading-relaxed">{verdict.sentence}</div>
-                  </div>
+            {noEdgeYet && (
+              <div className="rounded-xl bg-bear/10 border border-bear/30 p-3 mb-3">
+                <div className="text-sm font-semibold text-bear mb-1">⚠️ 目前系統沒有足夠證據證明具有正期望值</div>
+                <div className="text-xs text-text leading-relaxed">
+                  {auditStrict.totalSignals < 20
+                    ? `符合新版A級標準的訊號只有 ${auditStrict.totalSignals} 筆，樣本太少，還不能下結論。`
+                    : `符合新版A級標準的訊號 Profit Factor 是 ${auditStrict.profitFactor.toFixed(2)}（小於1代表長期是虧的）。`}
+                </div>
+              </div>
+            )}
 
-                  <div className="rounded-xl bg-panel2 p-4 mb-3 text-center">
-                    <div className="text-xs text-subtext mb-1">簡單試算（假設每筆只冒 1% 風險）</div>
-                    <div
-                      className={`text-2xl font-display font-bold numeric-safe ${
-                        simpleReturn >= 0 ? "text-bull" : "text-bear"
-                      }`}
-                    >
-                      {simpleReturn >= 0 ? "+" : ""}
-                      {simpleReturn.toFixed(1)}%
-                    </div>
-                    <div className="text-xs text-subtext mt-1">
-                      約 {Math.round(btResult.totalBars / 24)} 天期間，本金大概會變成這樣
-                    </div>
-                  </div>
+            <div className="text-xs font-semibold mb-2 text-subtext">SIGNAL PERFORMANCE</div>
+            <AuditReportCard report={auditAll} />
+            <AuditReportCard report={auditStrict} />
 
-                  <div className="mb-3">
-                    <div className="text-xs text-subtext mb-2">資金曲線（累積 R）</div>
-                    <EquityCurve rMultiples={btResult.trades.map((t) => t.rMultiple)} />
-                  </div>
+            <div className="text-xs font-semibold mb-2 text-subtext mt-1">STOP LOSS ANALYSIS</div>
+            <div className="rounded-xl bg-panel2 p-3 mb-3">
+              <div className="grid grid-cols-2 gap-2 text-center text-xs mb-2">
+                <div>
+                  <div className="text-subtext">平均成功交易 MAE</div>
+                  <div className="font-semibold numeric-safe">{auditAll.avgMAEWinners.toFixed(2)}%</div>
+                </div>
+                <div>
+                  <div className="text-subtext">平均失敗交易 MAE</div>
+                  <div className="font-semibold numeric-safe">{auditAll.avgMAELosers.toFixed(2)}%</div>
+                </div>
+                <div>
+                  <div className="text-subtext">平均成功交易 MFE</div>
+                  <div className="font-semibold numeric-safe">{auditAll.avgMFEWinners.toFixed(2)}%</div>
+                </div>
+                <div>
+                  <div className="text-subtext">目前平均停損距離</div>
+                  <div className="font-semibold numeric-safe">{auditAll.avgStopDistancePct.toFixed(2)}%</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 pt-2 border-t border-border">
+                <span className="text-lg">{slVerdict.emoji}</span>
+                <span className="text-xs">{slVerdict.label}</span>
+              </div>
+            </div>
 
-                  <details className="text-xs">
-                    <summary className="text-subtext cursor-pointer mb-3 select-none">查看詳細數字 ▾</summary>
-                    <div className="grid grid-cols-2 gap-2 text-center text-sm mb-1">
-                      <div className="rounded-xl bg-panel2 p-3">
-                        <div className="text-xs text-subtext">勝率</div>
-                        <div className="font-semibold numeric-safe">{btResult.winRate.toFixed(1)}%</div>
-                        <div className="text-[10px] text-subtext mt-1">贏的次數比例</div>
-                      </div>
-                      <div className="rounded-xl bg-panel2 p-3">
-                        <div className="text-xs text-subtext">交易次數</div>
-                        <div className="font-semibold numeric-safe">{btResult.totalTrades}</div>
-                        <div className="text-[10px] text-subtext mt-1">測試期間總共進場幾次</div>
-                      </div>
-                      <div className="rounded-xl bg-panel2 p-3">
-                        <div className="text-xs text-subtext">平均 R</div>
-                        <div
-                          className={`font-semibold numeric-safe ${btResult.avgR >= 0 ? "text-bull" : "text-bear"}`}
-                        >
-                          {btResult.avgR.toFixed(2)}
-                        </div>
-                        <div className="text-[10px] text-subtext mt-1">平均每筆賺賠幾倍風險</div>
-                      </div>
-                      <div className="rounded-xl bg-panel2 p-3">
-                        <div className="text-xs text-subtext">Profit Factor</div>
-                        <div className="font-semibold numeric-safe">
-                          {btResult.profitFactor === Infinity ? "∞" : btResult.profitFactor.toFixed(2)}
-                        </div>
-                        <div className="text-[10px] text-subtext mt-1">大於 1 代表長期是賺的</div>
-                      </div>
-                      <div className="rounded-xl bg-panel2 p-3 col-span-2">
-                        <div className="text-xs text-subtext">最慘連續虧損</div>
-                        <div className="font-semibold numeric-safe text-bear">-{btResult.maxDrawdownR.toFixed(2)}R</div>
-                        <div className="text-[10px] text-subtext mt-1">代表這段期間最難熬的時候虧了幾倍風險</div>
-                      </div>
-                    </div>
-                    <div className="text-[11px] text-subtext mt-2">
-                      測試範圍：{btResult.totalBars} 根 1小時K棒（約 {Math.round(btResult.totalBars / 24)} 天）
-                    </div>
-                  </details>
-                </>
-              );
-            })()}
+            <div className="mb-1">
+              <div className="text-xs text-subtext mb-2">資金曲線（全部技術面訊號，累積 R）</div>
+              <EquityCurve rMultiples={allTrades!.map((t) => t.rMultiple)} />
+            </div>
+
+            <div className="text-[11px] text-subtext mt-2 leading-relaxed">
+              TOP/WORST PERFORMING SETUPS：目前系統只有一套統一的技術面進場邏輯（趨勢+動能），還沒有拆分成多種具名策略（如突破、拉回、支撐反彈等），所以無法做策略間比較，這點誠實標註，之後如果要做可以再拆。
+            </div>
           </div>
         )}
       </section>
     </main>
   );
-}
- 
+      }
