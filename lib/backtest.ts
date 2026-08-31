@@ -159,10 +159,11 @@ export function runBacktest(symbol: string, interval: string, candles: Candle[])
 export interface SignalAuditReport {
   label: string;
   totalSignals: number;
+  completedTrades: number; // TP先到 + SL先到，不含未觸發（勝率的正確分母）
   tpFirst: number;
   slFirst: number;
   timeout: number;
-  winRate: number;
+  winRate: number; // 已完成交易的勝率（TP先到 / 已完成），不把未觸發訊號算進分母
   lossRate: number;
   avgR: number;
   profitFactor: number;
@@ -181,9 +182,12 @@ export function auditTrades(trades: BacktestTrade[], label: string): SignalAudit
   const winners = trades.filter((t) => t.result === "WIN");
   const losers = trades.filter((t) => t.result === "LOSS");
   const timeouts = trades.filter((t) => t.result === "TIMEOUT");
+  const completedTrades = winners.length + losers.length;
 
-  const winRate = total ? (winners.length / total) * 100 : 0;
-  const lossRate = total ? (losers.length / total) * 100 : 0;
+  // 勝率只計算「已經觸發停損或TP1」的交易，未觸發（TIMEOUT）不計入分母，
+  // 否則會把「還沒分出勝負」的訊號當成拉低勝率的分母，誤導判讀。
+  const winRate = completedTrades ? (winners.length / completedTrades) * 100 : 0;
+  const lossRate = completedTrades ? (losers.length / completedTrades) * 100 : 0;
   const avgR = total ? trades.reduce((a, t) => a + t.rMultiple, 0) / total : 0;
   const grossWin = winners.reduce((a, t) => a + t.rMultiple, 0);
   const grossLoss = Math.abs(losers.reduce((a, t) => a + t.rMultiple, 0));
@@ -210,6 +214,7 @@ export function auditTrades(trades: BacktestTrade[], label: string): SignalAudit
   return {
     label,
     totalSignals: total,
+    completedTrades,
     tpFirst: winners.length,
     slFirst: losers.length,
     timeout: timeouts.length,
