@@ -90,3 +90,32 @@ export function bollinger(
 export function last(values: number[]): number {
   return values[values.length - 1];
 }
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+
+// 結構化停損：用近期 Swing Low（收盤價序列的近期低點，非完整 OHLC wick，這是已知的簡化）
+// 加上「依波動率動態調整」的 ATR 緩衝，取代單純固定百分比停損。
+// 多單版本（本系統目前只做多單訊號）。
+export function calcStructuralStop(
+  closes: number[],
+  price: number,
+  atr14: number | null,
+  lookback: number = 20
+): number {
+  const window = closes.slice(-Math.min(lookback, closes.length));
+  const swingLow = window.length ? Math.min(...window) : price;
+  const atrPct = atr14 && price > 0 ? (atr14 / price) * 100 : 5;
+  // 波動越大，緩衝倍數越大，但限制在 0.5～1.5 倍之間，避免極端值失真
+  const bufferMult = clamp(atrPct / 3, 0.5, 1.5);
+  const atrBuffer = (atr14 ?? price * 0.02) * bufferMult;
+  let stop = swingLow - atrBuffer;
+
+  // 保底範圍：停損距離不能小於 2%（太貼近容易被正常雜訊掃到）
+  // 也不能大於 15%（結構位置在盤整格局時可能離現價過遠，失去停損意義）
+  let stopPct = ((price - stop) / price) * 100;
+  stopPct = clamp(stopPct, 2, 15);
+  stop = price * (1 - stopPct / 100);
+  return stop;
+}
