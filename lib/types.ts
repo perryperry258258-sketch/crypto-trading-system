@@ -64,6 +64,7 @@ export interface OpportunityCandidate {
   coin: CoinSnapshot;
   indicators: IndicatorSet;
   opportunityScore: number; // 0-100
+  entryQuality: number; // 0-100，進場點位品質（是否追高/貼近前高/量能確認/RR夠不夠），與 opportunityScore 分開評估
   riskScore: number; // 0-100，越低越安全
   grade: AlertGrade;
   entryLow: number;
