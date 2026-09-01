@@ -22,6 +22,7 @@ import {
   VariantAuditReport,
   PARTIAL_EXIT_SPLIT,
 } from "@/lib/tpComparison";
+import { runStrategyBacktest, buildStrategyLabResult, StrategyId, StrategyLabResult, STRATEGY_INFO } from "@/lib/strategyLab";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -212,6 +213,51 @@ function ComparisonTable({ reports }: { reports: VariantAuditReport[] }) {
   );
 }
 
+const CONSISTENCY_LABEL: Record<StrategyLabResult["consistent"], { emoji: string; text: string }> = {
+  CONSISTENT: { emoji: "🟢", text: "前後半段方向一致（都是正的）" },
+  INCONSISTENT: { emoji: "🟡", text: "前後半段方向不一致，可能是特定行情才有效，或過度配適" },
+  BOTH_NEGATIVE: { emoji: "🔴", text: "前後半段一致，但都是負的" },
+  TOO_FEW: { emoji: "🤷", text: "樣本太少，無法判斷是否一致" },
+};
+
+function StrategyResultCard({ r }: { r: StrategyLabResult }) {
+  const c = CONSISTENCY_LABEL[r.consistent];
+  return (
+    <div className="rounded-xl bg-panel2 p-3 mb-3">
+      <div className="text-xs font-semibold mb-1">{STRATEGY_INFO[r.strategy].name}</div>
+      <div className="text-[10px] text-subtext mb-2">{STRATEGY_INFO[r.strategy].desc}</div>
+      <div className="grid grid-cols-3 gap-2 text-center text-xs mb-2">
+        <div>
+          <div className="text-subtext">訊號數</div>
+          <div className="font-semibold numeric-safe">{r.overall.signalCount}</div>
+        </div>
+        <div>
+          <div className="text-subtext">平均R</div>
+          <div className={`font-semibold numeric-safe ${r.overall.avgR >= 0 ? "text-bull" : "text-bear"}`}>
+            {r.overall.avgR >= 0 ? "+" : ""}
+            {r.overall.avgR.toFixed(2)}
+          </div>
+        </div>
+        <div>
+          <div className="text-subtext">獲利因子</div>
+          <div className="font-semibold numeric-safe">
+            {r.overall.profitFactor === Infinity ? "∞" : r.overall.profitFactor.toFixed(2)}
+          </div>
+        </div>
+      </div>
+      <div className="text-[10px] text-subtext mb-1">
+        前半段 {r.firstHalf.signalCount}筆（{r.firstHalf.avgR >= 0 ? "+" : ""}
+        {r.firstHalf.avgR.toFixed(2)}R） ・ 後半段 {r.secondHalf.signalCount}筆（{r.secondHalf.avgR >= 0 ? "+" : ""}
+        {r.secondHalf.avgR.toFixed(2)}R）
+      </div>
+      <div className="flex items-center gap-2 pt-1.5 border-t border-border">
+        <span>{c.emoji}</span>
+        <span className="text-[11px]">{c.text}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
   const [auditDays, setAuditDays] = useState(180);
@@ -227,6 +273,12 @@ export default function JournalPage() {
   const [tpProgress, setTpProgress] = useState("");
   const [tpTrades, setTpTrades] = useState<Record<TpMode, TpVariantTrade[]> | null>(null);
   const [tpSignalCount, setTpSignalCount] = useState(0);
+
+  const [labDays, setLabDays] = useState(180);
+  const [labLoading, setLabLoading] = useState(false);
+  const [labError, setLabError] = useState<string | null>(null);
+  const [labProgress, setLabProgress] = useState("");
+  const [labResults, setLabResults] = useState<StrategyLabResult[] | null>(null);
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
@@ -348,6 +400,37 @@ export default function JournalPage() {
   const tpReports: VariantAuditReport[] | null = tpTrades
     ? (["TP1", "TP2", "TP3", "PARTIAL"] as TpMode[]).map((m) => auditVariant(tpTrades[m], TP_MODE_LABEL[m]))
     : null;
+
+  const STRATEGIES: StrategyId[] = ["MOMENTUM", "PULLBACK", "MEANREV"];
+
+  const runStrategyLab = async () => {
+    setLabLoading(true);
+    setLabError(null);
+    setLabResults(null);
+    const tradesByStrategy: Record<StrategyId, TpVariantTrade[]> = { MOMENTUM: [], PULLBACK: [], MEANREV: [] };
+    let successCount = 0;
+    for (const symbol of AUDIT_SYMBOLS) {
+      setLabProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
+      try {
+        const candles = await fetchKlinesHistory(symbol, "1h", labDays * 24);
+        if (candles.length >= 100) {
+          successCount++;
+          STRATEGIES.forEach((s) => {
+            tradesByStrategy[s].push(...runStrategyBacktest(s, symbol, candles));
+          });
+        }
+      } catch {
+        // 跳過失敗的幣種
+      }
+    }
+    setLabLoading(false);
+    setLabProgress("");
+    if (successCount === 0) {
+      setLabError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
+      return;
+    }
+    setLabResults(STRATEGIES.map((s) => buildStrategyLabResult(s, tradesByStrategy[s])));
+  };
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -642,6 +725,56 @@ export default function JournalPage() {
           </div>
         )}
       </section>
+
+      {/* 進場邏輯比較實驗室 */}
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-1">🧪 進場邏輯比較實驗室</div>
+        <div className="text-xs text-subtext mb-2 leading-relaxed">
+          比較三種邏輯上明顯不同的進場方式：動能追蹤（現行）、回踩確認、均值回歸。三個都先固定用 TP2(3R)
+          當出場基準（TP基準尚未定案，之後可以重測）。
+        </div>
+        <div className="text-[11px] text-warn mb-3 leading-relaxed">
+          ⚠️ 測試好幾種策略、挑歷史表現最好的那個，本身就是統計陷阱（data
+          snooping）——樣本不夠大時，測越多種，純粹運氣好跑出漂亮數字的機率就越高。這裡不會自動選出「最佳」策略，只給你數字和「前半段／後半段是否一致」的檢查，其餘要你自己判斷。
+        </div>
+
+        <div className="mb-3">
+          <label className="text-xs text-subtext mb-1 block">回測期間</label>
+          <select
+            value={labDays}
+            onChange={(e) => setLabDays(Number(e.target.value))}
+            className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
+            style={{ minHeight: 44 }}
+          >
+            {DURATION_OPTIONS.map((o) => (
+              <option key={o.days} value={o.days}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          onClick={runStrategyLab}
+          disabled={labLoading}
+          className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
+        >
+          {labLoading ? labProgress || "執行中…" : "執行進場邏輯比較"}
+        </button>
+
+        {labError && <div className="text-xs text-warn mb-2">⚠️ {labError}</div>}
+
+        {labResults && (
+          <div>
+            {labResults.map((r) => (
+              <StrategyResultCard key={r.strategy} r={r} />
+            ))}
+            <div className="text-[11px] text-subtext leading-relaxed">
+              「前後半段方向一致」不代表這個策略一定有效，只代表它不是單純運氣好——這是最低限度的健檢，不是及格證明。任何一個策略要真的拿來用，都建議先進到「模擬交易」跑一段時間，累積真正的即時資料再決定。
+            </div>
+          </div>
+        )}
+      </section>
     </main>
   );
-                }
+}
