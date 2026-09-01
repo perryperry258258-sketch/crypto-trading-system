@@ -46,6 +46,13 @@ import {
   OpenRangeAudit,
 } from "@/lib/openRangeLab";
 import { runMonteCarlo, MonteCarloResult } from "@/lib/monteCarlo";
+import {
+  runVolumeBreakoutEventStudy,
+  auditVolumeBreakout,
+  VolumeBreakoutEvent,
+  VolumeBreakoutReport,
+  VOLUME_RATIO_BINS,
+} from "@/lib/volumeBreakoutLab";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -94,6 +101,17 @@ const SEARCH_DURATION_OPTIONS: Record<"1h" | "4h" | "1d", { label: string; days:
     { label: "1095天（約3年）", days: 1095 },
   ],
 };
+const VB_DURATION_OPTIONS = [
+  { label: "30天", days: 30 },
+  { label: "60天", days: 60 },
+  { label: "90天（較久，5分鐘資料量大）", days: 90 },
+];
+const VB_WINDOW_OPTIONS: { label: string; value: 30 | 60 | 90 | 120 }[] = [
+  { label: "30分鐘", value: 30 },
+  { label: "60分鐘", value: 60 },
+  { label: "90分鐘", value: 90 },
+  { label: "120分鐘", value: 120 },
+];
 
 function fmt(n: number) {
   if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -522,6 +540,88 @@ function MonteCarloCard({ m }: { m: MonteCarloResult }) {
   );
 }
 
+function VolumeBreakoutCard({ r }: { r: VolumeBreakoutReport }) {
+  return (
+    <div className="rounded-xl bg-panel2 p-3 mb-3">
+      <div className="text-xs font-semibold mb-2">
+        {r.label}（{r.eventCount}個事件，平均量比 {r.avgVolumeRatio.toFixed(2)}x）
+      </div>
+      <div className="text-[10px] text-subtext mb-1">假突破率</div>
+      <div className="grid grid-cols-3 gap-2 text-center text-xs mb-2">
+        <div>
+          <div className="text-subtext">15分內</div>
+          <div className="font-semibold numeric-safe">{r.falseBreakoutRate15.toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">30分內</div>
+          <div className="font-semibold numeric-safe">{r.falseBreakoutRate30.toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">1H內</div>
+          <div className="font-semibold numeric-safe">{r.falseBreakoutRate60.toFixed(1)}%</div>
+        </div>
+      </div>
+      <div className="text-[10px] text-subtext mb-1">4小時內達到指定幅度的機率</div>
+      <div className="grid grid-cols-5 gap-1 text-center text-[11px] mb-2">
+        <div>
+          <div className="text-subtext">0.25%</div>
+          <div className="font-semibold numeric-safe">{r.achieved025Rate.toFixed(0)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">0.5%</div>
+          <div className="font-semibold numeric-safe">{r.achieved05Rate.toFixed(0)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">1%</div>
+          <div className="font-semibold numeric-safe">{r.achieved1Rate.toFixed(0)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">2%</div>
+          <div className="font-semibold numeric-safe">{r.achieved2Rate.toFixed(0)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">3%</div>
+          <div className="font-semibold numeric-safe">{r.achieved3Rate.toFixed(0)}%</div>
+        </div>
+      </div>
+      <div className="text-[10px] text-subtext mb-1">MFE / MAE（平均，%）</div>
+      <div className="grid grid-cols-4 gap-1 text-center text-[11px]">
+        <div>
+          <div className="text-subtext">30分</div>
+          <div className="numeric-safe text-bull">{r.avgMfe30.toFixed(2)}</div>
+          <div className="numeric-safe text-bear">{r.avgMae30.toFixed(2)}</div>
+        </div>
+        <div>
+          <div className="text-subtext">1H</div>
+          <div className="numeric-safe text-bull">{r.avgMfe60.toFixed(2)}</div>
+          <div className="numeric-safe text-bear">{r.avgMae60.toFixed(2)}</div>
+        </div>
+        <div>
+          <div className="text-subtext">2H</div>
+          <div className="numeric-safe text-bull">{r.avgMfe120.toFixed(2)}</div>
+          <div className="numeric-safe text-bear">{r.avgMae120.toFixed(2)}</div>
+        </div>
+        <div>
+          <div className="text-subtext">4H</div>
+          <div className="numeric-safe text-bull">{r.avgMfe240.toFixed(2)}</div>
+          <div className="numeric-safe text-bear">{r.avgMae240.toFixed(2)}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VolumeBreakoutMiniRow({ r }: { r: VolumeBreakoutReport }) {
+  return (
+    <div className="flex items-center justify-between text-xs rounded-lg bg-panel px-3 py-2">
+      <span className="font-medium w-20 shrink-0">{r.label}</span>
+      <span className="text-subtext">{r.eventCount}個</span>
+      <span className="numeric-safe">假突破{r.falseBreakoutRate30.toFixed(0)}%</span>
+      <span className="numeric-safe">達1% {r.achieved1Rate.toFixed(0)}%</span>
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
   const [auditDays, setAuditDays] = useState(180);
@@ -559,6 +659,13 @@ export default function JournalPage() {
   const [orProgress, setOrProgress] = useState("");
   const [orAllTrades, setOrAllTrades] = useState<Record<number, OpenRangeTrade[]> | null>(null);
   const [orActiveTp, setOrActiveTp] = useState<1 | 2 | 3>(2);
+
+  const [vbDays, setVbDays] = useState(90);
+  const [vbWindow, setVbWindow] = useState<30 | 60 | 90 | 120>(60);
+  const [vbLoading, setVbLoading] = useState(false);
+  const [vbError, setVbError] = useState<string | null>(null);
+  const [vbProgress, setVbProgress] = useState("");
+  const [vbEvents, setVbEvents] = useState<VolumeBreakoutEvent[] | null>(null);
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
@@ -845,6 +952,48 @@ export default function JournalPage() {
   const orYears = orTrades ? Array.from(new Set(orTrades.map((t) => t.year))).sort() : [];
   const orPerYear = orTrades ? orYears.map((y) => auditOpenRange(orTrades.filter((t) => t.year === y), String(y))) : null;
   const orMonteCarlo = orTrades && orTrades.length >= 20 ? runMonteCarlo(orTrades.map((t) => t.rMultiple), 2000) : null;
+
+  const runVolumeBreakoutLab = async () => {
+    setVbLoading(true);
+    setVbError(null);
+    setVbEvents(null);
+    const collected: VolumeBreakoutEvent[] = [];
+    let successCount = 0;
+    for (const symbol of AUDIT_SYMBOLS) {
+      setVbProgress(`抓取 ${symbol.replace("USDT", "")} 5分鐘資料中…`);
+      try {
+        const candles = await fetchKlinesHistory(symbol, "5m", vbDays * 288);
+        if (candles.length >= 500) {
+          successCount++;
+          collected.push(...runVolumeBreakoutEventStudy(symbol, candles, vbWindow));
+        }
+      } catch {
+        // 跳過失敗的幣種
+      }
+    }
+    setVbLoading(false);
+    setVbProgress("");
+    if (successCount === 0) {
+      setVbError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
+      return;
+    }
+    setVbEvents(collected);
+  };
+
+  const vbOverall = vbEvents ? auditVolumeBreakout(vbEvents, "全部事件") : null;
+  const vbLongs = vbEvents ? auditVolumeBreakout(vbEvents.filter((e) => e.direction === "LONG"), "多方事件") : null;
+  const vbShorts = vbEvents ? auditVolumeBreakout(vbEvents.filter((e) => e.direction === "SHORT"), "空方事件") : null;
+  const vbPerSymbol = vbEvents
+    ? AUDIT_SYMBOLS.map((s) => auditVolumeBreakout(vbEvents.filter((e) => e.symbol === s), s.replace("USDT", "")))
+    : null;
+  const vbByVolumeRatio = vbEvents
+    ? VOLUME_RATIO_BINS.map((bin) =>
+        auditVolumeBreakout(
+          vbEvents.filter((e) => e.volumeRatio >= bin.min && e.volumeRatio < bin.max),
+          bin.label
+        )
+      )
+    : null;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -1431,6 +1580,106 @@ export default function JournalPage() {
           </div>
         )}
       </section>
+
+      {/* 美股高成交量K突破 — 事件研究 */}
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-1">🔬 美股高成交量K突破（事件研究）</div>
+        <div className="text-xs text-subtext mb-2 leading-relaxed">
+          這不是交易策略，沒有TP/SL——先只回答「這個市場事件本身有沒有可利用的統計優勢」。用5分鐘K線，開盤(09:30
+          ET)後的觀察窗口裡找出成交量最大的那根K線當Reference，之後5分鐘收盤價突破它的高/低點才算一個事件，純粹統計突破後的價格路徑。
+        </div>
+        <details className="text-[11px] text-subtext mb-3">
+          <summary className="cursor-pointer select-none">這次沒做到什麼（誠實揭露）▾</summary>
+          <ul className="list-disc list-inside mt-2 space-y-1">
+            <li>只測收盤突破，影線突破、連續兩根確認突破沒做</li>
+            <li>沒有分 Reference Candle 陽線/陰線與實體比例的交叉分析</li>
+            <li>沒有分開盤後出現時間（09:30-09:45等區段）的分析</li>
+            <li>沒有 Reference Range / ATR 大小分箱</li>
+            <li>沒有 BTC 領先訊號研究（BTC先突破、其他幣是否跟隨）</li>
+            <li>沒有分年份、分市場環境</li>
+            <li>這是事件研究階段，還沒有任何交易策略／進場模擬——這批數字本身就是最終產出</li>
+          </ul>
+        </details>
+
+        <div className="mb-3">
+          <label className="text-xs text-subtext mb-1 block">觀察窗口</label>
+          <select
+            value={vbWindow}
+            onChange={(e) => setVbWindow(Number(e.target.value) as 30 | 60 | 90 | 120)}
+            className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
+            style={{ minHeight: 44 }}
+          >
+            {VB_WINDOW_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="mb-3">
+          <label className="text-xs text-subtext mb-1 block">回測期間</label>
+          <select
+            value={vbDays}
+            onChange={(e) => setVbDays(Number(e.target.value))}
+            className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
+            style={{ minHeight: 44 }}
+          >
+            {VB_DURATION_OPTIONS.map((o) => (
+              <option key={o.days} value={o.days}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          onClick={runVolumeBreakoutLab}
+          disabled={vbLoading}
+          className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
+        >
+          {vbLoading ? vbProgress || "執行中…" : "執行事件研究"}
+        </button>
+
+        {vbError && <div className="text-xs text-warn mb-2">⚠️ {vbError}</div>}
+
+        {vbOverall && vbLongs && vbShorts && vbPerSymbol && vbByVolumeRatio && (
+          <div>
+            <div className="text-xs font-semibold mb-2 text-subtext">總覽</div>
+            <VolumeBreakoutCard r={vbOverall} />
+
+            <div className="text-xs font-semibold mb-2 text-subtext">多方事件 vs 空方事件</div>
+            <VolumeBreakoutMiniRow r={vbLongs} />
+            <div className="h-1.5" />
+            <VolumeBreakoutMiniRow r={vbShorts} />
+
+            <details className="mt-3 mb-3">
+              <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                分幣種結果（{AUDIT_SYMBOLS.length}個）▾
+              </summary>
+              <div className="space-y-1.5">
+                {vbPerSymbol.map((r) => (
+                  <VolumeBreakoutMiniRow key={r.label} r={r} />
+                ))}
+              </div>
+            </details>
+
+            <details className="mb-1">
+              <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                分成交量倍率結果 ▾
+              </summary>
+              <div className="space-y-1.5">
+                {vbByVolumeRatio.map((r) => (
+                  <VolumeBreakoutMiniRow key={r.label} r={r} />
+                ))}
+              </div>
+              <div className="text-[11px] text-subtext mt-2 leading-relaxed">
+                如果成交量倍率越高的區間，達標機率／假突破率沒有明顯變化，代表成交量本身可能不是有效的篩選條件。
+              </div>
+            </details>
+          </div>
+        )}
+      </section>
     </main>
   );
-          }
+    }
