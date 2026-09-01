@@ -14,6 +14,14 @@ import {
   FEE_PCT,
   SLIPPAGE_PCT,
 } from "@/lib/backtest";
+import {
+  runTpComparisonBacktest,
+  auditVariant,
+  TpMode,
+  TpVariantTrade,
+  VariantAuditReport,
+  PARTIAL_EXIT_SPLIT,
+} from "@/lib/tpComparison";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -150,6 +158,60 @@ function DebugStatsPanel({ d }: { d: DebugStats }) {
   );
 }
 
+const TP_MODE_LABEL: Record<TpMode, string> = {
+  TP1: "TP1 (1.5R)",
+  TP2: "TP2 (3R)",
+  TP3: "TP3 (5R)",
+  PARTIAL: "分批止盈",
+};
+
+function ComparisonTable({ reports }: { reports: VariantAuditReport[] }) {
+  const rows: [string, (r: VariantAuditReport) => string][] = [
+    ["訊號數", (r) => r.signalCount.toString()],
+    ["勝率", (r) => `${r.winRate.toFixed(1)}%`],
+    ["SL先到", (r) => r.slFirst.toString()],
+    ["TP1先到", (r) => r.tp1First.toString()],
+    ["TP2先到", (r) => r.tp2First.toString()],
+    ["TP3先到", (r) => r.tp3First.toString()],
+    ["未觸發", (r) => r.timeout.toString()],
+    ["平均R(期望值)", (r) => (r.expectancy >= 0 ? "+" : "") + r.expectancy.toFixed(2)],
+    ["獲利因子", (r) => (r.profitFactor === Infinity ? "∞" : r.profitFactor.toFixed(2))],
+    ["最大回撤", (r) => `-${r.maxDrawdownR.toFixed(2)}R`],
+    ["最大連續虧損", (r) => `${r.maxConsecutiveLosses}筆`],
+    ["平均持倉", (r) => `${r.avgHoldingBars.toFixed(0)}h`],
+    ["平均MAE", (r) => `${r.avgMAE.toFixed(2)}%`],
+    ["平均MFE", (r) => `${r.avgMFE.toFixed(2)}%`],
+  ];
+  return (
+    <div className="overflow-x-auto -mx-1">
+      <table className="w-full text-[11px] border-collapse min-w-[420px]">
+        <thead>
+          <tr>
+            <th className="text-left text-subtext font-normal px-1.5 py-1"></th>
+            {reports.map((r) => (
+              <th key={r.label} className="text-right font-semibold px-1.5 py-1 whitespace-nowrap">
+                {r.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([label, fn]) => (
+            <tr key={label} className="border-t border-border">
+              <td className="text-subtext px-1.5 py-1.5 whitespace-nowrap">{label}</td>
+              {reports.map((r) => (
+                <td key={r.label} className="text-right numeric-safe px-1.5 py-1.5">
+                  {fn(r)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
   const [auditDays, setAuditDays] = useState(180);
@@ -158,6 +220,13 @@ export default function JournalPage() {
   const [auditProgress, setAuditProgress] = useState("");
   const [allTrades, setAllTrades] = useState<BacktestTrade[] | null>(null);
   const [debugTotals, setDebugTotals] = useState<DebugStats | null>(null);
+
+  const [tpDays, setTpDays] = useState(90);
+  const [tpLoading, setTpLoading] = useState(false);
+  const [tpError, setTpError] = useState<string | null>(null);
+  const [tpProgress, setTpProgress] = useState("");
+  const [tpTrades, setTpTrades] = useState<Record<TpMode, TpVariantTrade[]> | null>(null);
+  const [tpSignalCount, setTpSignalCount] = useState(0);
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
@@ -241,6 +310,44 @@ export default function JournalPage() {
   }
 
   const grade = overall ? gradeStrategy(overall, outOfSample) : null;
+
+  const runTpComparison = async () => {
+    setTpLoading(true);
+    setTpError(null);
+    setTpTrades(null);
+    setTpSignalCount(0);
+    const merged: Record<TpMode, TpVariantTrade[]> = { TP1: [], TP2: [], TP3: [], PARTIAL: [] };
+    let signalTotal = 0;
+    let successCount = 0;
+    for (const symbol of AUDIT_SYMBOLS) {
+      setTpProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
+      try {
+        const candles = await fetchKlinesHistory(symbol, "1h", tpDays * 24);
+        if (candles.length >= 100) {
+          successCount++;
+          const result = runTpComparisonBacktest(symbol, "1h", candles);
+          signalTotal += result.signalCount;
+          (Object.keys(merged) as TpMode[]).forEach((m) => {
+            merged[m].push(...result.variants[m]);
+          });
+        }
+      } catch {
+        // 這個幣種抓取失敗，跳過繼續抓下一個
+      }
+    }
+    setTpLoading(false);
+    setTpProgress("");
+    if (successCount === 0) {
+      setTpError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
+      return;
+    }
+    setTpTrades(merged);
+    setTpSignalCount(signalTotal);
+  };
+
+  const tpReports: VariantAuditReport[] | null = tpTrades
+    ? (["TP1", "TP2", "TP3", "PARTIAL"] as TpMode[]).map((m) => auditVariant(tpTrades[m], TP_MODE_LABEL[m]))
+    : null;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -482,6 +589,59 @@ export default function JournalPage() {
           </div>
         )}
       </section>
+
+      {/* TP結構比較回測 */}
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-1">⚖️ TP結構比較回測</div>
+        <div className="text-xs text-subtext mb-2 leading-relaxed">
+          R:R稽核發現：TP1 固定 1.5R，跟「R:R≥3」代數上互斥，導致 A 級恆為 0 筆。這裡不套用 R:R≥3 這道門檻，直接對「Opportunity
+          Score≥80」的訊號（Entry/Stop/訊號條件完全相同），平行比較四種出場方案：TP1(1.5R)、TP2(3R)、TP3(5R)、分批止盈（
+          {(PARTIAL_EXIT_SPLIT.tp1 * 100).toFixed(0)}% / {(PARTIAL_EXIT_SPLIT.tp2 * 100).toFixed(0)}% /{" "}
+          {(PARTIAL_EXIT_SPLIT.tp3 * 100).toFixed(0)}%，這組比例是參數，不是宣稱最佳）。
+        </div>
+        <div className="text-[11px] text-warn mb-3 leading-relaxed">
+          ⚠️ 不要只看勝率選最好的方案——勝率高但賠得比賺得多，長期還是虧錢。請優先比較「平均R(期望值)」「獲利因子」「最大回撤」。
+          結果出來後我不會自動幫你選一個當正式策略，要你自己決定。
+        </div>
+
+        <div className="mb-3">
+          <label className="text-xs text-subtext mb-1 block">回測期間</label>
+          <select
+            value={tpDays}
+            onChange={(e) => setTpDays(Number(e.target.value))}
+            className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
+            style={{ minHeight: 44 }}
+          >
+            {DURATION_OPTIONS.map((o) => (
+              <option key={o.days} value={o.days}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          onClick={runTpComparison}
+          disabled={tpLoading}
+          className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
+        >
+          {tpLoading ? tpProgress || "執行中…" : "執行TP結構比較回測"}
+        </button>
+
+        {tpError && <div className="text-xs text-warn mb-2">⚠️ {tpError}</div>}
+
+        {tpReports && (
+          <div>
+            <div className="text-xs text-subtext mb-2">
+              共 {tpSignalCount} 筆 Opportunity≥80 訊號（未套用 R:R 門檻），四個方案在同一組訊號上比較：
+            </div>
+            <ComparisonTable reports={tpReports} />
+            <div className="text-[11px] text-subtext mt-3 leading-relaxed">
+              SL先到／TP1先到／TP2先到／TP3先到 是分開計算的觸價統計，不是彼此互斥的百分比加總（分批止盈方案一筆交易可能同時計入TP1先到與TP2先到，因為兩個目標都有部分出場）。
+            </div>
+          </div>
+        )}
+      </section>
     </main>
   );
-}
+                }
