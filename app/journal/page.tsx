@@ -23,6 +23,15 @@ import {
   PARTIAL_EXIT_SPLIT,
 } from "@/lib/tpComparison";
 import { runStrategyBacktest, buildStrategyLabResult, StrategyId, StrategyLabResult, STRATEGY_INFO } from "@/lib/strategyLab";
+import {
+  buildParamGrid,
+  precomputeIndicators,
+  runComboBacktest,
+  rankCombos,
+  ComboResult,
+  TREND_GRID,
+  MOMENTUM_GRID,
+} from "@/lib/paramSearch";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -258,6 +267,99 @@ function StrategyResultCard({ r }: { r: StrategyLabResult }) {
   );
 }
 
+function ComboVerdict(r: ComboResult): { emoji: string; label: string; text: string } {
+  if (r.holdout.signalCount < 10) {
+    return { emoji: "🤷", label: "驗證段樣本太少", text: "驗證段不足10筆，沒辦法判斷這組參數是否禁得起檢驗。" };
+  }
+  if (r.search.avgR > 0 && r.holdout.avgR > 0) {
+    return { emoji: "🟢", label: "兩段都是正的", text: "搜尋段找到的優勢，在沒看過的驗證段依然成立，比較不像是矇到的。" };
+  }
+  return {
+    emoji: "🔴",
+    label: "驗證段沒有撐住",
+    text: "搜尋段表現好，但驗證段（沒被用來挑選的資料）是負的——代表搜尋段那個「正期望值」很可能只是矇到歷史雜訊，不是真的優勢。",
+  };
+}
+
+function WinnerCard({ r }: { r: ComboResult }) {
+  const v = ComboVerdict(r);
+  return (
+    <div className="rounded-xl bg-panel2 p-3 mb-3">
+      <div className="text-xs font-semibold mb-1">
+        搜尋段表現最好的組合：趨勢≥{r.combo.trendMin} 且 動能≥{r.combo.momentumMin}
+      </div>
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <div className="rounded-lg bg-panel p-2">
+          <div className="text-[10px] text-subtext mb-1">搜尋段（前70%，挑選用）</div>
+          <div className="text-xs numeric-safe">{r.search.signalCount}筆</div>
+          <div className={`text-sm font-semibold numeric-safe ${r.search.avgR >= 0 ? "text-bull" : "text-bear"}`}>
+            {r.search.avgR >= 0 ? "+" : ""}
+            {r.search.avgR.toFixed(2)}R
+          </div>
+          <div className="text-[10px] text-subtext">
+            PF {r.search.profitFactor === Infinity ? "∞" : r.search.profitFactor.toFixed(2)}
+          </div>
+        </div>
+        <div className="rounded-lg bg-panel p-2">
+          <div className="text-[10px] text-subtext mb-1">驗證段（後30%，沒被看過）</div>
+          <div className="text-xs numeric-safe">{r.holdout.signalCount}筆</div>
+          <div className={`text-sm font-semibold numeric-safe ${r.holdout.avgR >= 0 ? "text-bull" : "text-bear"}`}>
+            {r.holdout.avgR >= 0 ? "+" : ""}
+            {r.holdout.avgR.toFixed(2)}R
+          </div>
+          <div className="text-[10px] text-subtext">
+            PF {r.holdout.profitFactor === Infinity ? "∞" : r.holdout.profitFactor.toFixed(2)}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-start gap-2 pt-1.5 border-t border-border">
+        <span className="text-base leading-none">{v.emoji}</span>
+        <div>
+          <div className="text-xs font-semibold">{v.label}</div>
+          <div className="text-[11px] text-subtext leading-relaxed">{v.text}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LeaderboardTable({ results }: { results: ComboResult[] }) {
+  return (
+    <div className="overflow-x-auto -mx-1">
+      <table className="w-full text-[11px] border-collapse min-w-[360px]">
+        <thead>
+          <tr>
+            <th className="text-left text-subtext font-normal px-1.5 py-1">參數</th>
+            <th className="text-right text-subtext font-normal px-1.5 py-1">搜尋段R</th>
+            <th className="text-right text-subtext font-normal px-1.5 py-1">驗證段R</th>
+            <th className="text-right text-subtext font-normal px-1.5 py-1">驗證段PF</th>
+          </tr>
+        </thead>
+        <tbody>
+          {results.map((r) => (
+            <tr key={`${r.combo.trendMin}-${r.combo.momentumMin}`} className="border-t border-border">
+              <td className="px-1.5 py-1.5 whitespace-nowrap">
+                T≥{r.combo.trendMin} M≥{r.combo.momentumMin}
+              </td>
+              <td className={`text-right numeric-safe px-1.5 py-1.5 ${r.search.avgR >= 0 ? "text-bull" : "text-bear"}`}>
+                {r.search.avgR >= 0 ? "+" : ""}
+                {r.search.avgR.toFixed(2)}
+              </td>
+              <td className={`text-right numeric-safe px-1.5 py-1.5 ${r.holdout.avgR >= 0 ? "text-bull" : "text-bear"}`}>
+                {r.holdout.avgR >= 0 ? "+" : ""}
+                {r.holdout.avgR.toFixed(2)}
+              </td>
+              <td className="text-right numeric-safe px-1.5 py-1.5">
+                {r.holdout.profitFactor === Infinity ? "∞" : r.holdout.profitFactor.toFixed(2)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
   const [auditDays, setAuditDays] = useState(180);
@@ -279,6 +381,12 @@ export default function JournalPage() {
   const [labError, setLabError] = useState<string | null>(null);
   const [labProgress, setLabProgress] = useState("");
   const [labResults, setLabResults] = useState<StrategyLabResult[] | null>(null);
+
+  const [searchDays, setSearchDays] = useState(365);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchProgress, setSearchProgress] = useState("");
+  const [comboResults, setComboResults] = useState<ComboResult[] | null>(null);
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
@@ -431,6 +539,58 @@ export default function JournalPage() {
     }
     setLabResults(STRATEGIES.map((s) => buildStrategyLabResult(s, tradesByStrategy[s])));
   };
+
+  const runParamSearch = async () => {
+    setSearchLoading(true);
+    setSearchError(null);
+    setComboResults(null);
+    const grid = buildParamGrid();
+    const perCombo: Record<string, { search: TpVariantTrade[]; holdout: TpVariantTrade[] }> = {};
+    grid.forEach((c) => {
+      perCombo[`${c.trendMin}-${c.momentumMin}`] = { search: [], holdout: [] };
+    });
+    let successCount = 0;
+    for (const symbol of AUDIT_SYMBOLS) {
+      setSearchProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
+      try {
+        const candles = await fetchKlinesHistory(symbol, "1h", searchDays * 24);
+        if (candles.length >= 200) {
+          successCount++;
+          const closes = candles.map((c) => c.close);
+          const barIndicators = precomputeIndicators(closes);
+          const splitIdx = Math.floor(candles.length * 0.7);
+          grid.forEach((combo) => {
+            const key = `${combo.trendMin}-${combo.momentumMin}`;
+            const searchTrades = runComboBacktest(combo, symbol, candles, closes, barIndicators, 0, splitIdx);
+            const holdoutTrades = runComboBacktest(combo, symbol, candles, closes, barIndicators, splitIdx, candles.length);
+            perCombo[key].search.push(...searchTrades);
+            perCombo[key].holdout.push(...holdoutTrades);
+          });
+        }
+      } catch {
+        // 跳過失敗的幣種
+      }
+    }
+    setSearchLoading(false);
+    setSearchProgress("");
+    if (successCount === 0) {
+      setSearchError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
+      return;
+    }
+    const results: ComboResult[] = grid.map((combo) => {
+      const key = `${combo.trendMin}-${combo.momentumMin}`;
+      return {
+        combo,
+        search: auditVariant(perCombo[key].search, `T≥${combo.trendMin} M≥${combo.momentumMin}`),
+        holdout: auditVariant(perCombo[key].holdout, "驗證段"),
+      };
+    });
+    setComboResults(results);
+  };
+
+  const ranked = comboResults ? rankCombos(comboResults) : null;
+  const winner = ranked && ranked.length > 0 ? ranked[0] : null;
+  const top5 = ranked ? ranked.slice(0, 5) : null;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -775,6 +935,65 @@ export default function JournalPage() {
           </div>
         )}
       </section>
+
+      {/* 參數網格搜尋（訓練/測試分離） */}
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-1">🔬 參數搜尋（訓練/測試分離）</div>
+        <div className="text-xs text-subtext mb-2 leading-relaxed">
+          把每個幣種的資料切成「搜尋段」（前70%）跟「驗證段」（後30%，完全不參與挑選）。在搜尋段裡嘗試 {TREND_GRID.length}×
+          {MOMENTUM_GRID.length} = {TREND_GRID.length * MOMENTUM_GRID.length}
+          種趨勢／動能門檻組合，挑出搜尋段表現最好的一組，最後只用完全沒被看過的驗證段重新檢驗一次。TP固定用TP2(3R)。
+        </div>
+        <div className="text-[11px] text-warn mb-3 leading-relaxed">
+          ⚠️ 只有「搜尋段」跟「驗證段」都是正的，才代表這組參數可能是真的優勢；如果驗證段是負的，代表搜尋段那個「正期望值」只是矇到歷史雜訊。建議至少選 365
+          天，資料太少切完兩段會不夠用。
+        </div>
+
+        <div className="mb-3">
+          <label className="text-xs text-subtext mb-1 block">回測期間</label>
+          <select
+            value={searchDays}
+            onChange={(e) => setSearchDays(Number(e.target.value))}
+            className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
+            style={{ minHeight: 44 }}
+          >
+            {DURATION_OPTIONS.map((o) => (
+              <option key={o.days} value={o.days}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          onClick={runParamSearch}
+          disabled={searchLoading}
+          className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
+        >
+          {searchLoading ? searchProgress || "執行中…（25組參數，會比較久）" : "執行參數搜尋"}
+        </button>
+
+        {searchError && <div className="text-xs text-warn mb-2">⚠️ {searchError}</div>}
+
+        {winner && top5 && (
+          <div>
+            <div className="text-xs font-semibold mb-2 text-subtext">搜尋結果</div>
+            <WinnerCard r={winner} />
+            <details className="mb-1">
+              <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                搜尋段前5名排行榜（含驗證段對照）▾
+              </summary>
+              <LeaderboardTable results={top5} />
+            </details>
+          </div>
+        )}
+
+        {comboResults && !winner && (
+          <div className="rounded-xl bg-panel2 p-4 text-center text-sm text-subtext">
+            沒有任何一組參數在搜尋段累積到 20 筆以上的訊號，樣本太少，這次搜尋沒有可靠結果。
+          </div>
+        )}
+      </section>
     </main>
   );
-}
+                                    }
