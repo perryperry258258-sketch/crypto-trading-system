@@ -22,7 +22,14 @@ import {
   VariantAuditReport,
   PARTIAL_EXIT_SPLIT,
 } from "@/lib/tpComparison";
-import { runStrategyBacktest, buildStrategyLabResult, StrategyId, StrategyLabResult, STRATEGY_INFO } from "@/lib/strategyLab";
+import {
+  runStrategyBacktest,
+  buildStrategyLabResult,
+  buildBtcSeries,
+  StrategyId,
+  StrategyLabResult,
+  STRATEGY_INFO,
+} from "@/lib/strategyLab";
 import {
   buildParamGrid,
   precomputeIndicators,
@@ -548,7 +555,15 @@ export default function JournalPage() {
     ? (["TP1", "TP2", "TP3", "PARTIAL"] as TpMode[]).map((m) => auditVariant(tpTrades[m], TP_MODE_LABEL[m]))
     : null;
 
-  const STRATEGIES: StrategyId[] = ["MOMENTUM", "PULLBACK", "MEANREV", "BREAKOUT", "BREAKOUT_RETEST", "VOL_EXPANSION"];
+  const STRATEGIES: StrategyId[] = [
+    "MOMENTUM",
+    "PULLBACK",
+    "MEANREV",
+    "BREAKOUT",
+    "BREAKOUT_RETEST",
+    "VOL_EXPANSION",
+    "RELATIVE_STRENGTH",
+  ];
 
   const runStrategyLab = async () => {
     setLabLoading(true);
@@ -561,8 +576,20 @@ export default function JournalPage() {
       BREAKOUT: [],
       BREAKOUT_RETEST: [],
       VOL_EXPANSION: [],
+      RELATIVE_STRENGTH: [],
     };
     let successCount = 0;
+
+    // 相對強弱度需要 BTC 的價格序列當對照基準，先單獨抓一次
+    setLabProgress("抓取 BTC 對照資料中…");
+    let btcSeries: Map<number, number> | null = null;
+    try {
+      const btcCandles = await fetchKlinesHistory("BTCUSDT", labInterval, labDays * BARS_PER_DAY[labInterval]);
+      if (btcCandles.length >= 100) btcSeries = buildBtcSeries(btcCandles);
+    } catch {
+      // BTC對照資料抓不到，相對強弱度那個策略這次就不會產生訊號，其他策略不受影響
+    }
+
     for (const symbol of AUDIT_SYMBOLS) {
       setLabProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
       try {
@@ -570,7 +597,7 @@ export default function JournalPage() {
         if (candles.length >= 100) {
           successCount++;
           STRATEGIES.forEach((s) => {
-            tradesByStrategy[s].push(...runStrategyBacktest(s, symbol, candles));
+            tradesByStrategy[s].push(...runStrategyBacktest(s, symbol, candles, btcSeries));
           });
         }
       } catch {
@@ -948,7 +975,7 @@ export default function JournalPage() {
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">🧪 進場邏輯比較實驗室</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
-          比較六種邏輯上明顯不同的進場方式：動能追蹤、回踩確認、均值回歸、突破、突破+回踩確認、波動擴張。全部先固定用 TP2(3R)
+          比較七種邏輯上明顯不同的進場方式：動能追蹤、回踩確認、均值回歸、突破、突破+回踩確認、波動擴張、相對強弱度（跟BTC比誰強）。全部先固定用 TP2(3R)
           當出場基準（TP基準尚未定案，之後可以重測）。
         </div>
         <div className="text-[11px] text-warn mb-3 leading-relaxed">
@@ -993,7 +1020,7 @@ export default function JournalPage() {
           disabled={labLoading}
           className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
         >
-          {labLoading ? labProgress || "執行中…（6種策略，會比較久）" : "執行進場邏輯比較"}
+          {labLoading ? labProgress || "執行中…（7種策略，會比較久）" : "執行進場邏輯比較"}
         </button>
 
         {labError && <div className="text-xs text-warn mb-2">⚠️ {labError}</div>}
@@ -1103,4 +1130,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-}
+        }
