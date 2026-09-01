@@ -250,13 +250,25 @@ const CONSISTENCY_LABEL: Record<StrategyLabResult["consistent"], { emoji: string
   TOO_FEW: { emoji: "🤷", text: "樣本太少，無法判斷是否一致" },
 };
 
+const STATUS_BADGE: Record<StrategyLabResult["status"], { emoji: string; label: string; className: string }> = {
+  CANDIDATE: { emoji: "🟢", label: "候選", className: "text-bull" },
+  NEED_MORE: { emoji: "🟡", label: "需要更多驗證", className: "text-warn" },
+  FAILED: { emoji: "🔴", label: "淘汰", className: "text-bear" },
+};
+
 function StrategyResultCard({ r }: { r: StrategyLabResult }) {
   const c = CONSISTENCY_LABEL[r.consistent];
+  const status = STATUS_BADGE[r.status];
   return (
     <div className="rounded-xl bg-panel2 p-3 mb-3">
-      <div className="text-xs font-semibold mb-1">{STRATEGY_INFO[r.strategy].name}</div>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-xs font-semibold">{STRATEGY_INFO[r.strategy].name}</div>
+        <span className={`text-[11px] font-semibold ${status.className}`}>
+          {status.emoji} {status.label}
+        </span>
+      </div>
       <div className="text-[10px] text-subtext mb-2">{STRATEGY_INFO[r.strategy].desc}</div>
-      <div className="grid grid-cols-3 gap-2 text-center text-xs mb-2">
+      <div className="grid grid-cols-4 gap-2 text-center text-xs mb-2">
         <div>
           <div className="text-subtext">訊號數</div>
           <div className="font-semibold numeric-safe">{r.overall.signalCount}</div>
@@ -273,6 +285,10 @@ function StrategyResultCard({ r }: { r: StrategyLabResult }) {
           <div className="font-semibold numeric-safe">
             {r.overall.profitFactor === Infinity ? "∞" : r.overall.profitFactor.toFixed(2)}
           </div>
+        </div>
+        <div>
+          <div className="text-subtext">穩健度</div>
+          <div className="font-semibold numeric-safe">{r.robustnessScore}/100</div>
         </div>
       </div>
       <div className="text-[10px] text-subtext mb-1">
@@ -397,6 +413,7 @@ export default function JournalPage() {
   const [tpTrades, setTpTrades] = useState<Record<TpMode, TpVariantTrade[]> | null>(null);
   const [tpSignalCount, setTpSignalCount] = useState(0);
 
+  const [labInterval, setLabInterval] = useState<"1h" | "4h" | "1d">("1h");
   const [labDays, setLabDays] = useState(180);
   const [labLoading, setLabLoading] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
@@ -454,10 +471,13 @@ export default function JournalPage() {
       setAuditError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
       return;
     }
+    // 即使 collected 是空陣列（這段期間剛好一筆訊號都沒有），也是誠實的結果，不當成錯誤
     setAllTrades(collected);
     setDebugTotals(debugSum);
   };
 
+  // runBacktest() 內部已經直接呼叫跟 production 相同的 buildOpportunity()，
+  // 回傳的 trades 陣列本身就只包含真正判定為 A/S 級的訊號，這裡不需要再另外篩選一次。
   const aGradeTrades = allTrades;
   const overall = aGradeTrades ? auditTrades(aGradeTrades, "全部A級訊號") : null;
 
@@ -511,7 +531,7 @@ export default function JournalPage() {
           });
         }
       } catch {
-        // 跳過失敗的幣種
+        // 這個幣種抓取失敗，跳過繼續抓下一個
       }
     }
     setTpLoading(false);
@@ -528,18 +548,25 @@ export default function JournalPage() {
     ? (["TP1", "TP2", "TP3", "PARTIAL"] as TpMode[]).map((m) => auditVariant(tpTrades[m], TP_MODE_LABEL[m]))
     : null;
 
-  const STRATEGIES: StrategyId[] = ["MOMENTUM", "PULLBACK", "MEANREV"];
+  const STRATEGIES: StrategyId[] = ["MOMENTUM", "PULLBACK", "MEANREV", "BREAKOUT", "BREAKOUT_RETEST", "VOL_EXPANSION"];
 
   const runStrategyLab = async () => {
     setLabLoading(true);
     setLabError(null);
     setLabResults(null);
-    const tradesByStrategy: Record<StrategyId, TpVariantTrade[]> = { MOMENTUM: [], PULLBACK: [], MEANREV: [] };
+    const tradesByStrategy: Record<StrategyId, TpVariantTrade[]> = {
+      MOMENTUM: [],
+      PULLBACK: [],
+      MEANREV: [],
+      BREAKOUT: [],
+      BREAKOUT_RETEST: [],
+      VOL_EXPANSION: [],
+    };
     let successCount = 0;
     for (const symbol of AUDIT_SYMBOLS) {
       setLabProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
       try {
-        const candles = await fetchKlinesHistory(symbol, "1h", labDays * 24);
+        const candles = await fetchKlinesHistory(symbol, labInterval, labDays * BARS_PER_DAY[labInterval]);
         if (candles.length >= 100) {
           successCount++;
           STRATEGIES.forEach((s) => {
@@ -556,7 +583,14 @@ export default function JournalPage() {
       setLabError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
       return;
     }
-    setLabResults(STRATEGIES.map((s) => buildStrategyLabResult(s, tradesByStrategy[s])));
+    const built = STRATEGIES.map((s) => buildStrategyLabResult(s, tradesByStrategy[s]));
+    built.sort((a, b) => b.robustnessScore - a.robustnessScore);
+    setLabResults(built);
+  };
+
+  const handleLabIntervalChange = (v: "1h" | "4h" | "1d") => {
+    setLabInterval(v);
+    setLabDays(SEARCH_DURATION_OPTIONS[v][0].days);
   };
 
   const runParamSearch = async () => {
@@ -631,6 +665,7 @@ export default function JournalPage() {
         </div>
       </section>
 
+      {/* 模擬交易績效 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">📈 模擬交易（Paper Trading）績效</div>
         <div className="text-xs text-subtext mb-3 leading-relaxed">
@@ -669,6 +704,7 @@ export default function JournalPage() {
         )}
       </section>
 
+      {/* 未平倉模擬部位 */}
       {paperOpen.length > 0 && (
         <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
           <div className="text-sm font-semibold mb-2">未平倉模擬部位（{paperOpen.length}）</div>
@@ -692,6 +728,7 @@ export default function JournalPage() {
         </section>
       )}
 
+      {/* 已平倉紀錄 */}
       {paperClosed.length > 0 && (
         <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
           <div className="text-sm font-semibold mb-2">最近平倉紀錄</div>
@@ -712,6 +749,7 @@ export default function JournalPage() {
         </section>
       )}
 
+      {/* A級策略歷史驗證 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">🏆 A級策略歷史驗證</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
@@ -760,6 +798,7 @@ export default function JournalPage() {
 
         {overall && grade && perSymbol && perRegime && inSample && outOfSample && (
           <div>
+            {/* 最終判定 */}
             <div className="rounded-xl bg-panel2 p-3 mb-3">
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xl">{grade.emoji}</span>
@@ -768,6 +807,7 @@ export default function JournalPage() {
               <div className="text-xs text-text leading-relaxed">{grade.desc}</div>
             </div>
 
+            {/* Debug Statistics */}
             {debugTotals && (
               <details className="mb-3">
                 <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
@@ -786,6 +826,7 @@ export default function JournalPage() {
               <AuditReportCard report={overall} />
             )}
 
+            {/* 分幣種 */}
             <details className="mb-3">
               <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
                 分幣種結果（{AUDIT_SYMBOLS.length}個）▾
@@ -797,6 +838,7 @@ export default function JournalPage() {
               </div>
             </details>
 
+            {/* 分市場環境 */}
             <details className="mb-3">
               <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
                 分市場環境結果 ▾
@@ -808,11 +850,13 @@ export default function JournalPage() {
               </div>
             </details>
 
+            {/* 樣本內 vs 樣本外 */}
             <div className="text-xs font-semibold mb-2 text-subtext">樣本內／樣本外比較</div>
             <MiniRow label="樣本內" report={inSample} />
             <div className="h-1.5" />
             <MiniRow label="樣本外" report={outOfSample} />
 
+            {/* 停損分析 */}
             <div className="text-xs font-semibold mb-2 text-subtext mt-3">停損分析</div>
             <div className="rounded-xl bg-panel2 p-3 mb-3">
               <div className="grid grid-cols-2 gap-2 text-center text-xs mb-2">
@@ -847,6 +891,7 @@ export default function JournalPage() {
         )}
       </section>
 
+      {/* TP結構比較回測 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">⚖️ TP結構比較回測</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
@@ -899,15 +944,32 @@ export default function JournalPage() {
         )}
       </section>
 
+      {/* 進場邏輯比較實驗室 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">🧪 進場邏輯比較實驗室</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
-          比較三種邏輯上明顯不同的進場方式：動能追蹤（現行）、回踩確認、均值回歸。三個都先固定用 TP2(3R)
+          比較六種邏輯上明顯不同的進場方式：動能追蹤、回踩確認、均值回歸、突破、突破+回踩確認、波動擴張。全部先固定用 TP2(3R)
           當出場基準（TP基準尚未定案，之後可以重測）。
         </div>
         <div className="text-[11px] text-warn mb-3 leading-relaxed">
           ⚠️ 測試好幾種策略、挑歷史表現最好的那個，本身就是統計陷阱（data
-          snooping）——樣本不夠大時，測越多種，純粹運氣好跑出漂亮數字的機率就越高。這裡不會自動選出「最佳」策略，只給你數字和「前半段／後半段是否一致」的檢查，其餘要你自己判斷。
+          snooping）。「穩健度分數」是把樣本數／獲利因子／期望值／前後半段一致性這幾項濃縮成一個排序參考，不是有效性認證——真正代表意義的是下面的完整數字，不是那個分數本身。
+        </div>
+
+        <div className="mb-3">
+          <label className="text-xs text-subtext mb-1 block">K線週期</label>
+          <select
+            value={labInterval}
+            onChange={(e) => handleLabIntervalChange(e.target.value as "1h" | "4h" | "1d")}
+            className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
+            style={{ minHeight: 44 }}
+          >
+            {INTERVAL_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="mb-3">
@@ -918,7 +980,7 @@ export default function JournalPage() {
             className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
             style={{ minHeight: 44 }}
           >
-            {DURATION_OPTIONS.map((o) => (
+            {SEARCH_DURATION_OPTIONS[labInterval].map((o) => (
               <option key={o.days} value={o.days}>
                 {o.label}
               </option>
@@ -931,23 +993,31 @@ export default function JournalPage() {
           disabled={labLoading}
           className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
         >
-          {labLoading ? labProgress || "執行中…" : "執行進場邏輯比較"}
+          {labLoading ? labProgress || "執行中…（6種策略，會比較久）" : "執行進場邏輯比較"}
         </button>
 
         {labError && <div className="text-xs text-warn mb-2">⚠️ {labError}</div>}
 
         {labResults && (
           <div>
+            <div className="text-xs text-subtext mb-3">
+              已測策略：{labResults.length} ・ 候選：
+              <span className="text-bull">{labResults.filter((r) => r.status === "CANDIDATE").length}</span> ・ 需要更多驗證：
+              <span className="text-warn">{labResults.filter((r) => r.status === "NEED_MORE").length}</span> ・ 淘汰：
+              <span className="text-bear">{labResults.filter((r) => r.status === "FAILED").length}</span>
+              （已依穩健度分數排序）
+            </div>
             {labResults.map((r) => (
               <StrategyResultCard key={r.strategy} r={r} />
             ))}
             <div className="text-[11px] text-subtext leading-relaxed">
-              「前後半段方向一致」不代表這個策略一定有效，只代表它不是單純運氣好——這是最低限度的健檢，不是及格證明。任何一個策略要真的拿來用，都建議先進到「模擬交易」跑一段時間，累積真正的即時資料再決定。
+              「前後半段方向一致」不代表這個策略一定有效，只代表它不是單純運氣好——這是最低限度的健檢，不是及格證明。任何策略要真的拿來用，都建議先進到「模擬交易」跑一段時間，累積真正的即時資料再決定。
             </div>
           </div>
         )}
       </section>
 
+      {/* 參數網格搜尋（訓練/測試分離） */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">🔬 參數搜尋（訓練/測試分離）</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
@@ -1033,4 +1103,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-                     }
+}
