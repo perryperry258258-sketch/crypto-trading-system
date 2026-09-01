@@ -60,6 +60,27 @@ const DURATION_OPTIONS = [
   { label: "365天（較久，建議保持螢幕開啟）", days: 365 },
 ];
 
+const INTERVAL_OPTIONS: { label: string; value: "1h" | "4h" | "1d" }[] = [
+  { label: "1小時線", value: "1h" },
+  { label: "4小時線", value: "4h" },
+  { label: "日線", value: "1d" },
+];
+const BARS_PER_DAY: Record<"1h" | "4h" | "1d", number> = { "1h": 24, "4h": 6, "1d": 1 };
+const SEARCH_DURATION_OPTIONS: Record<"1h" | "4h" | "1d", { label: string; days: number }[]> = {
+  "1h": [
+    { label: "180天", days: 180 },
+    { label: "365天（較久）", days: 365 },
+  ],
+  "4h": [
+    { label: "365天", days: 365 },
+    { label: "730天（約2年）", days: 730 },
+  ],
+  "1d": [
+    { label: "730天（約2年）", days: 730 },
+    { label: "1095天（約3年）", days: 1095 },
+  ],
+};
+
 function fmt(n: number) {
   if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return n.toPrecision(4);
@@ -382,6 +403,7 @@ export default function JournalPage() {
   const [labProgress, setLabProgress] = useState("");
   const [labResults, setLabResults] = useState<StrategyLabResult[] | null>(null);
 
+  const [searchInterval, setSearchInterval] = useState<"1h" | "4h" | "1d">("1h");
   const [searchDays, setSearchDays] = useState(365);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -432,13 +454,10 @@ export default function JournalPage() {
       setAuditError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
       return;
     }
-    // 即使 collected 是空陣列（這段期間剛好一筆訊號都沒有），也是誠實的結果，不當成錯誤
     setAllTrades(collected);
     setDebugTotals(debugSum);
   };
 
-  // runBacktest() 內部已經直接呼叫跟 production 相同的 buildOpportunity()，
-  // 回傳的 trades 陣列本身就只包含真正判定為 A/S 級的訊號，這裡不需要再另外篩選一次。
   const aGradeTrades = allTrades;
   const overall = aGradeTrades ? auditTrades(aGradeTrades, "全部A級訊號") : null;
 
@@ -492,7 +511,7 @@ export default function JournalPage() {
           });
         }
       } catch {
-        // 這個幣種抓取失敗，跳過繼續抓下一個
+        // 跳過失敗的幣種
       }
     }
     setTpLoading(false);
@@ -553,7 +572,7 @@ export default function JournalPage() {
     for (const symbol of AUDIT_SYMBOLS) {
       setSearchProgress(`抓取 ${symbol.replace("USDT", "")} 歷史資料中…`);
       try {
-        const candles = await fetchKlinesHistory(symbol, "1h", searchDays * 24);
+        const candles = await fetchKlinesHistory(symbol, searchInterval, searchDays * BARS_PER_DAY[searchInterval]);
         if (candles.length >= 200) {
           successCount++;
           const closes = candles.map((c) => c.close);
@@ -592,6 +611,11 @@ export default function JournalPage() {
   const winner = ranked && ranked.length > 0 ? ranked[0] : null;
   const top5 = ranked ? ranked.slice(0, 5) : null;
 
+  const handleIntervalChange = (v: "1h" | "4h" | "1d") => {
+    setSearchInterval(v);
+    setSearchDays(SEARCH_DURATION_OPTIONS[v][0].days);
+  };
+
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
       <header className="mb-4">
@@ -607,7 +631,6 @@ export default function JournalPage() {
         </div>
       </section>
 
-      {/* 模擬交易績效 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">📈 模擬交易（Paper Trading）績效</div>
         <div className="text-xs text-subtext mb-3 leading-relaxed">
@@ -646,7 +669,6 @@ export default function JournalPage() {
         )}
       </section>
 
-      {/* 未平倉模擬部位 */}
       {paperOpen.length > 0 && (
         <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
           <div className="text-sm font-semibold mb-2">未平倉模擬部位（{paperOpen.length}）</div>
@@ -670,7 +692,6 @@ export default function JournalPage() {
         </section>
       )}
 
-      {/* 已平倉紀錄 */}
       {paperClosed.length > 0 && (
         <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
           <div className="text-sm font-semibold mb-2">最近平倉紀錄</div>
@@ -691,7 +712,6 @@ export default function JournalPage() {
         </section>
       )}
 
-      {/* A級策略歷史驗證 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">🏆 A級策略歷史驗證</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
@@ -740,7 +760,6 @@ export default function JournalPage() {
 
         {overall && grade && perSymbol && perRegime && inSample && outOfSample && (
           <div>
-            {/* 最終判定 */}
             <div className="rounded-xl bg-panel2 p-3 mb-3">
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xl">{grade.emoji}</span>
@@ -749,7 +768,6 @@ export default function JournalPage() {
               <div className="text-xs text-text leading-relaxed">{grade.desc}</div>
             </div>
 
-            {/* Debug Statistics */}
             {debugTotals && (
               <details className="mb-3">
                 <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
@@ -768,7 +786,6 @@ export default function JournalPage() {
               <AuditReportCard report={overall} />
             )}
 
-            {/* 分幣種 */}
             <details className="mb-3">
               <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
                 分幣種結果（{AUDIT_SYMBOLS.length}個）▾
@@ -780,7 +797,6 @@ export default function JournalPage() {
               </div>
             </details>
 
-            {/* 分市場環境 */}
             <details className="mb-3">
               <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
                 分市場環境結果 ▾
@@ -792,13 +808,11 @@ export default function JournalPage() {
               </div>
             </details>
 
-            {/* 樣本內 vs 樣本外 */}
             <div className="text-xs font-semibold mb-2 text-subtext">樣本內／樣本外比較</div>
             <MiniRow label="樣本內" report={inSample} />
             <div className="h-1.5" />
             <MiniRow label="樣本外" report={outOfSample} />
 
-            {/* 停損分析 */}
             <div className="text-xs font-semibold mb-2 text-subtext mt-3">停損分析</div>
             <div className="rounded-xl bg-panel2 p-3 mb-3">
               <div className="grid grid-cols-2 gap-2 text-center text-xs mb-2">
@@ -833,7 +847,6 @@ export default function JournalPage() {
         )}
       </section>
 
-      {/* TP結構比較回測 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">⚖️ TP結構比較回測</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
@@ -886,7 +899,6 @@ export default function JournalPage() {
         )}
       </section>
 
-      {/* 進場邏輯比較實驗室 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">🧪 進場邏輯比較實驗室</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
@@ -936,7 +948,6 @@ export default function JournalPage() {
         )}
       </section>
 
-      {/* 參數網格搜尋（訓練/測試分離） */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">🔬 參數搜尋（訓練/測試分離）</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
@@ -948,6 +959,30 @@ export default function JournalPage() {
           ⚠️ 只有「搜尋段」跟「驗證段」都是正的，才代表這組參數可能是真的優勢；如果驗證段是負的，代表搜尋段那個「正期望值」只是矇到歷史雜訊。建議至少選 365
           天，資料太少切完兩段會不夠用。
         </div>
+        <details className="text-[11px] text-subtext mb-3">
+          <summary className="cursor-pointer select-none">切換K線週期會改變什麼（誠實揭露）▾</summary>
+          <ul className="list-disc list-inside mt-2 space-y-1">
+            <li>最大持倉時間固定是200根K棒——1小時線約8天，4小時線約33天，日線則是200天，週期越大代表允許抱越久，這是自動跟著變的，不是刻意調整</li>
+            <li>4小時線／日線需要更長的天數才能累積到足夠的K棒數量，已經自動調整成對應天數的選項</li>
+            <li>日線資料下載反而比1小時線快，因為總根數少很多</li>
+          </ul>
+        </details>
+
+        <div className="mb-3">
+          <label className="text-xs text-subtext mb-1 block">K線週期</label>
+          <select
+            value={searchInterval}
+            onChange={(e) => handleIntervalChange(e.target.value as "1h" | "4h" | "1d")}
+            className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
+            style={{ minHeight: 44 }}
+          >
+            {INTERVAL_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
 
         <div className="mb-3">
           <label className="text-xs text-subtext mb-1 block">回測期間</label>
@@ -957,7 +992,7 @@ export default function JournalPage() {
             className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
             style={{ minHeight: 44 }}
           >
-            {DURATION_OPTIONS.map((o) => (
+            {SEARCH_DURATION_OPTIONS[searchInterval].map((o) => (
               <option key={o.days} value={o.days}>
                 {o.label}
               </option>
@@ -977,7 +1012,9 @@ export default function JournalPage() {
 
         {winner && top5 && (
           <div>
-            <div className="text-xs font-semibold mb-2 text-subtext">搜尋結果</div>
+            <div className="text-xs font-semibold mb-2 text-subtext">
+              搜尋結果（{INTERVAL_OPTIONS.find((o) => o.value === searchInterval)?.label}・{searchDays}天）
+            </div>
             <WinnerCard r={winner} />
             <details className="mb-1">
               <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
@@ -996,4 +1033,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-                                    }
+                     }
