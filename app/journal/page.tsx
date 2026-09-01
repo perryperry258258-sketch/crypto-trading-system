@@ -45,6 +45,7 @@ import {
   OpenRangeTrade,
   OpenRangeAudit,
 } from "@/lib/openRangeLab";
+import { runMonteCarlo, MonteCarloResult } from "@/lib/monteCarlo";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -489,6 +490,38 @@ function OpenRangeMiniRow({ a }: { a: OpenRangeAudit }) {
   );
 }
 
+function MonteCarloCard({ m }: { m: MonteCarloResult }) {
+  return (
+    <div className="rounded-xl bg-panel2 p-3 mb-3">
+      <div className="text-xs font-semibold mb-1">蒙地卡羅重排（{m.simulations.toLocaleString()}次，{m.tradeCount}筆交易重新洗牌順序）</div>
+      <div className="text-[10px] text-subtext mb-2 leading-relaxed">
+        歷史剛好發生的順序只是眾多可能之一。這裡把同一批交易的順序重排很多次，看最大回撤的分布範圍——不會改變策略本身有沒有效，只回答「回撤風險大概多大」。
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-center text-xs">
+        <div>
+          <div className="text-subtext">歷史實際回撤</div>
+          <div className="font-semibold numeric-safe text-bear">-{m.historicalDrawdownR.toFixed(2)}R</div>
+        </div>
+        <div>
+          <div className="text-subtext">中位數回撤(50%)</div>
+          <div className="font-semibold numeric-safe text-bear">-{m.p50DrawdownR.toFixed(2)}R</div>
+        </div>
+        <div>
+          <div className="text-subtext">樂觀情境(5%)</div>
+          <div className="font-semibold numeric-safe text-bear">-{m.p5DrawdownR.toFixed(2)}R</div>
+        </div>
+        <div>
+          <div className="text-subtext">悲觀情境(95%)</div>
+          <div className="font-semibold numeric-safe text-bear">-{m.p95DrawdownR.toFixed(2)}R</div>
+        </div>
+      </div>
+      <div className="text-[10px] text-subtext mt-2">
+        最壞情況（{m.simulations.toLocaleString()}次裡最差的一次）：-{m.worstDrawdownR.toFixed(2)}R
+      </div>
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
   const [auditDays, setAuditDays] = useState(180);
@@ -520,6 +553,7 @@ export default function JournalPage() {
   const [comboResults, setComboResults] = useState<ComboResult[] | null>(null);
 
   const [orDays, setOrDays] = useState(180);
+  const [orRangeMinutes, setOrRangeMinutes] = useState<30 | 60>(30);
   const [orLoading, setOrLoading] = useState(false);
   const [orError, setOrError] = useState<string | null>(null);
   const [orProgress, setOrProgress] = useState("");
@@ -782,7 +816,7 @@ export default function JournalPage() {
         if (candles.length >= 200) {
           successCount++;
           [1, 2, 3].forEach((tp) => {
-            perTp[tp].push(...runOpenRangeBacktest(symbol, candles, tp));
+            perTp[tp].push(...runOpenRangeBacktest(symbol, candles, tp, orRangeMinutes));
           });
         }
       } catch {
@@ -810,6 +844,7 @@ export default function JournalPage() {
     : null;
   const orYears = orTrades ? Array.from(new Set(orTrades.map((t) => t.year))).sort() : [];
   const orPerYear = orTrades ? orYears.map((y) => auditOpenRange(orTrades.filter((t) => t.year === y), String(y))) : null;
+  const orMonteCarlo = orTrades && orTrades.length >= 20 ? runMonteCarlo(orTrades.map((t) => t.rMultiple), 2000) : null;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -1274,7 +1309,6 @@ export default function JournalPage() {
         <details className="text-[11px] text-subtext mb-3">
           <summary className="cursor-pointer select-none">這次沒做到什麼（誠實揭露）▾</summary>
           <ul className="list-disc list-inside mt-2 space-y-1">
-            <li>只做 30 分鐘開盤區間，60 分鐘版本沒做</li>
             <li>只做收盤突破，影線突破、收盤+成交量確認突破沒做</li>
             <li>只測區間對側停損，ATR停損、區間倍數停損沒做</li>
             <li>只測「美股收盤」這一種時間出場，30分/1H/2H/4H/隔日開盤沒做</li>
@@ -1283,6 +1317,25 @@ export default function JournalPage() {
             <li>沒有停損倍數的參數穩定性掃描</li>
           </ul>
         </details>
+
+        <div className="mb-3">
+          <label className="text-xs text-subtext mb-1 block">開盤區間長度</label>
+          <div className="flex gap-2">
+            {[30, 60].map((m) => (
+              <button
+                key={m}
+                onClick={() => setOrRangeMinutes(m as 30 | 60)}
+                className={`flex-1 rounded-xl text-sm py-2 border ${
+                  orRangeMinutes === m
+                    ? "bg-accent/20 text-accent border-accent/40"
+                    : "bg-panel2 text-subtext border-border"
+                }`}
+              >
+                {m}分鐘
+              </button>
+            ))}
+          </div>
+        </div>
 
         <div className="mb-3">
           <label className="text-xs text-subtext mb-1 block">回測期間</label>
@@ -1328,8 +1381,12 @@ export default function JournalPage() {
               ))}
             </div>
 
-            <div className="text-xs font-semibold mb-2 text-subtext">總覽（多單＋空單）</div>
+            <div className="text-xs font-semibold mb-2 text-subtext">
+              總覽（多單＋空單，{orRangeMinutes}分鐘區間）
+            </div>
             <OpenRangeCard a={orCombined} />
+
+            {orMonteCarlo && <MonteCarloCard m={orMonteCarlo} />}
 
             <div className="text-xs font-semibold mb-2 text-subtext">多單 vs 空單</div>
             <OpenRangeMiniRow a={orLongs} />
@@ -1376,4 +1433,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-}
+          }
