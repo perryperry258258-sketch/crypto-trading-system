@@ -49,9 +49,11 @@ import { runMonteCarlo, MonteCarloResult } from "@/lib/monteCarlo";
 import {
   runVolumeBreakoutEventStudy,
   auditVolumeBreakout,
+  toRetestReport,
   VolumeBreakoutEvent,
   VolumeBreakoutReport,
   VOLUME_RATIO_BINS,
+  CLV_BINS,
 } from "@/lib/volumeBreakoutLab";
 import EquityCurve from "@/components/EquityCurve";
 
@@ -561,7 +563,7 @@ function VolumeBreakoutCard({ r }: { r: VolumeBreakoutReport }) {
           <div className="font-semibold numeric-safe">{r.falseBreakoutRate60.toFixed(1)}%</div>
         </div>
       </div>
-      <div className="text-[10px] text-subtext mb-1">4小時內達到指定幅度的機率</div>
+      <div className="text-[10px] text-subtext mb-1">4小時內達到指定幅度的機率（1%機率附95%信賴區間）</div>
       <div className="grid grid-cols-5 gap-1 text-center text-[11px] mb-2">
         <div>
           <div className="text-subtext">0.25%</div>
@@ -574,6 +576,9 @@ function VolumeBreakoutCard({ r }: { r: VolumeBreakoutReport }) {
         <div>
           <div className="text-subtext">1%</div>
           <div className="font-semibold numeric-safe">{r.achieved1Rate.toFixed(0)}%</div>
+          <div className="text-[9px] text-subtext">
+            [{r.achieved1RateCI[0].toFixed(0)}~{r.achieved1RateCI[1].toFixed(0)}]
+          </div>
         </div>
         <div>
           <div className="text-subtext">2%</div>
@@ -994,6 +999,12 @@ export default function JournalPage() {
         )
       )
     : null;
+  const vbByCLV = vbEvents
+    ? CLV_BINS.map((bin) => auditVolumeBreakout(vbEvents.filter((e) => e.clv >= bin.min && e.clv < bin.max), bin.label))
+    : null;
+  const vbDirectReport = vbEvents ? auditVolumeBreakout(vbEvents, "直接進場（全部事件）") : null;
+  const vbRetestReport = vbEvents ? toRetestReport(vbEvents, "等回踩才進場") : null;
+  const vbRetestFoundRate = vbEvents && vbEvents.length ? (vbEvents.filter((e) => e.retestFound).length / vbEvents.length) * 100 : 0;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -1586,18 +1597,18 @@ export default function JournalPage() {
         <div className="text-sm font-semibold mb-1">🔬 美股高成交量K突破（事件研究）</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
           這不是交易策略，沒有TP/SL——先只回答「這個市場事件本身有沒有可利用的統計優勢」。用5分鐘K線，開盤(09:30
-          ET)後的觀察窗口裡找出成交量最大的那根K線當Reference，之後5分鐘收盤價突破它的高/低點才算一個事件，純粹統計突破後的價格路徑。
+          ET)後的觀察窗口裡找出成交量最大的那根K線當Reference，之後5分鐘收盤價突破它的高/低點才算一個事件，純粹統計突破後的價格路徑，包含「直接進場」vs「等回踩才進場」的比較。
         </div>
         <details className="text-[11px] text-subtext mb-3">
           <summary className="cursor-pointer select-none">這次沒做到什麼（誠實揭露）▾</summary>
           <ul className="list-disc list-inside mt-2 space-y-1">
             <li>只測收盤突破，影線突破、連續兩根確認突破沒做</li>
-            <li>沒有分 Reference Candle 陽線/陰線與實體比例的交叉分析</li>
             <li>沒有分開盤後出現時間（09:30-09:45等區段）的分析</li>
-            <li>沒有 Reference Range / ATR 大小分箱</li>
-            <li>沒有 BTC 領先訊號研究（BTC先突破、其他幣是否跟隨）</li>
-            <li>沒有分年份、分市場環境</li>
-            <li>這是事件研究階段，還沒有任何交易策略／進場模擬——這批數字本身就是最終產出</li>
+            <li>沒有 Reference Range / ATR 大小分箱、沒有突破距離(Breakout Distance)研究</li>
+            <li>沒有 BTC 市場環境分類、沒有 BTC 領先訊號研究（BTC先突破、其他幣是否跟隨）</li>
+            <li>沒有分年份</li>
+            <li>回踩定義是簡化版：價格碰到Reference水平±0.3%內且期間沒有收盤跌破，用這個時間點當回踩進場價，不是等更嚴謹的「回踩後再次確認向上」訊號</li>
+            <li>這是事件研究階段，沒有任何交易策略／TP/SL/部位大小設計——這批數字本身就是最終產出</li>
           </ul>
         </details>
 
@@ -1643,12 +1654,22 @@ export default function JournalPage() {
 
         {vbError && <div className="text-xs text-warn mb-2">⚠️ {vbError}</div>}
 
-        {vbOverall && vbLongs && vbShorts && vbPerSymbol && vbByVolumeRatio && (
+        {vbOverall && vbLongs && vbShorts && vbPerSymbol && vbByVolumeRatio && vbByCLV && vbDirectReport && vbRetestReport && (
           <div>
             <div className="text-xs font-semibold mb-2 text-subtext">總覽</div>
             <VolumeBreakoutCard r={vbOverall} />
 
-            <div className="text-xs font-semibold mb-2 text-subtext">多方事件 vs 空方事件</div>
+            <div className="text-xs font-semibold mb-2 text-subtext">
+              直接進場 vs 等回踩才進場（{vbRetestFoundRate.toFixed(0)}%的事件有出現回踩）
+            </div>
+            <div className="text-[11px] text-warn mb-2 leading-relaxed">
+              ⚠️ 「等回踩才進場」的樣本數天生比較少（只有真的出現回踩的事件才算），數字要連同樣本數一起看，不是單看百分比。
+            </div>
+            <VolumeBreakoutMiniRow r={vbDirectReport} />
+            <div className="h-1.5" />
+            <VolumeBreakoutMiniRow r={vbRetestReport} />
+
+            <div className="text-xs font-semibold mb-2 text-subtext mt-3">多方事件 vs 空方事件</div>
             <VolumeBreakoutMiniRow r={vbLongs} />
             <div className="h-1.5" />
             <VolumeBreakoutMiniRow r={vbShorts} />
@@ -1664,7 +1685,7 @@ export default function JournalPage() {
               </div>
             </details>
 
-            <details className="mb-1">
+            <details className="mb-3">
               <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
                 分成交量倍率結果 ▾
               </summary>
@@ -1677,9 +1698,23 @@ export default function JournalPage() {
                 如果成交量倍率越高的區間，達標機率／假突破率沒有明顯變化，代表成交量本身可能不是有效的篩選條件。
               </div>
             </details>
+
+            <details className="mb-1">
+              <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                分 CLV（Reference Candle收盤位置）結果 ▾
+              </summary>
+              <div className="space-y-1.5">
+                {vbByCLV.map((r) => (
+                  <VolumeBreakoutMiniRow key={r.label} r={r} />
+                ))}
+              </div>
+              <div className="text-[11px] text-subtext mt-2 leading-relaxed">
+                CLV接近1代表Reference Candle收在當根最高點附近（偏多方主導），接近0代表收在最低點附近（偏空方主導）。
+              </div>
+            </details>
           </div>
         )}
       </section>
     </main>
   );
-    }
+      }
