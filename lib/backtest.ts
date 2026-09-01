@@ -72,9 +72,9 @@ export interface BacktestResult {
   debug: DebugStats;
 }
 
-const LOOKBACK_MIN = 60;
-const INDICATOR_WINDOW = 250;
-const MAX_HOLD_BARS = 200;
+export const LOOKBACK_MIN = 60;
+export const INDICATOR_WINDOW = 250;
+export const MAX_HOLD_BARS = 200;
 export const FEE_PCT = 0.1;
 export const SLIPPAGE_PCT = 0.05;
 
