@@ -39,6 +39,12 @@ import {
   TREND_GRID,
   MOMENTUM_GRID,
 } from "@/lib/paramSearch";
+import {
+  runOpenRangeBacktest,
+  auditOpenRange,
+  OpenRangeTrade,
+  OpenRangeAudit,
+} from "@/lib/openRangeLab";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -404,6 +410,85 @@ function LeaderboardTable({ results }: { results: ComboResult[] }) {
   );
 }
 
+function OpenRangeCard({ a }: { a: OpenRangeAudit }) {
+  return (
+    <div className="rounded-xl bg-panel2 p-3 mb-3">
+      <div className="text-xs font-semibold mb-2">{a.label}</div>
+      <div className="grid grid-cols-3 gap-2 text-center text-xs mb-2">
+        <div>
+          <div className="text-subtext">訊號數</div>
+          <div className="font-semibold numeric-safe">{a.totalSignals}</div>
+        </div>
+        <div>
+          <div className="text-subtext">勝率</div>
+          <div className="font-semibold numeric-safe">{a.winRate.toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">假突破率</div>
+          <div className="font-semibold numeric-safe">{a.falseBreakoutRate.toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">達1R機率</div>
+          <div className="font-semibold numeric-safe">{a.achieved1R.toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">達2R機率</div>
+          <div className="font-semibold numeric-safe">{a.achieved2R.toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">達3R機率</div>
+          <div className="font-semibold numeric-safe">{a.achieved3R.toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-subtext">平均MFE</div>
+          <div className="font-semibold numeric-safe">{a.avgMFE.toFixed(2)}R</div>
+        </div>
+        <div>
+          <div className="text-subtext">平均MAE</div>
+          <div className="font-semibold numeric-safe">{a.avgMAE.toFixed(2)}R</div>
+        </div>
+        <div>
+          <div className="text-subtext">期望值</div>
+          <div className={`font-semibold numeric-safe ${a.expectancy >= 0 ? "text-bull" : "text-bear"}`}>
+            {a.expectancy >= 0 ? "+" : ""}
+            {a.expectancy.toFixed(2)}R
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-center text-xs">
+        <div>
+          <div className="text-subtext">獲利因子</div>
+          <div className="font-semibold numeric-safe">
+            {a.profitFactor === Infinity ? "∞" : a.profitFactor.toFixed(2)}
+          </div>
+        </div>
+        <div>
+          <div className="text-subtext">最大回撤</div>
+          <div className="font-semibold numeric-safe text-bear">-{a.maxDrawdownR.toFixed(2)}R</div>
+        </div>
+        <div>
+          <div className="text-subtext">最大連續虧損</div>
+          <div className="font-semibold numeric-safe text-bear">{a.maxConsecutiveLosses}筆</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OpenRangeMiniRow({ a }: { a: OpenRangeAudit }) {
+  return (
+    <div className="flex items-center justify-between text-xs rounded-lg bg-panel px-3 py-2">
+      <span className="font-medium w-16 shrink-0">{a.label}</span>
+      <span className="text-subtext">{a.totalSignals}筆</span>
+      <span className="numeric-safe">{a.winRate.toFixed(0)}%勝率</span>
+      <span className={`numeric-safe ${a.expectancy >= 0 ? "text-bull" : "text-bear"}`}>
+        {a.expectancy >= 0 ? "+" : ""}
+        {a.expectancy.toFixed(2)}R
+      </span>
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
   const [auditDays, setAuditDays] = useState(180);
@@ -433,6 +518,13 @@ export default function JournalPage() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchProgress, setSearchProgress] = useState("");
   const [comboResults, setComboResults] = useState<ComboResult[] | null>(null);
+
+  const [orDays, setOrDays] = useState(180);
+  const [orLoading, setOrLoading] = useState(false);
+  const [orError, setOrError] = useState<string | null>(null);
+  const [orProgress, setOrProgress] = useState("");
+  const [orAllTrades, setOrAllTrades] = useState<Record<number, OpenRangeTrade[]> | null>(null);
+  const [orActiveTp, setOrActiveTp] = useState<1 | 2 | 3>(2);
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
@@ -676,6 +768,48 @@ export default function JournalPage() {
     setSearchInterval(v);
     setSearchDays(SEARCH_DURATION_OPTIONS[v][0].days);
   };
+
+  const runOpenRangeLab = async () => {
+    setOrLoading(true);
+    setOrError(null);
+    setOrAllTrades(null);
+    const perTp: Record<number, OpenRangeTrade[]> = { 1: [], 2: [], 3: [] };
+    let successCount = 0;
+    for (const symbol of AUDIT_SYMBOLS) {
+      setOrProgress(`抓取 ${symbol.replace("USDT", "")} 30分鐘資料中…`);
+      try {
+        const candles = await fetchKlinesHistory(symbol, "30m", orDays * 48);
+        if (candles.length >= 200) {
+          successCount++;
+          [1, 2, 3].forEach((tp) => {
+            perTp[tp].push(...runOpenRangeBacktest(symbol, candles, tp));
+          });
+        }
+      } catch {
+        // 跳過失敗的幣種
+      }
+    }
+    setOrLoading(false);
+    setOrProgress("");
+    if (successCount === 0) {
+      setOrError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
+      return;
+    }
+    setOrAllTrades(perTp);
+  };
+
+  const orTrades = orAllTrades ? orAllTrades[orActiveTp] : null;
+  const orCombined = orTrades ? auditOpenRange(orTrades, `全部（多單＋空單，TP=${orActiveTp}R）`) : null;
+  const orLongs = orTrades ? auditOpenRange(orTrades.filter((t) => t.direction === "LONG"), "多單") : null;
+  const orShorts = orTrades ? auditOpenRange(orTrades.filter((t) => t.direction === "SHORT"), "空單") : null;
+  const orPerSymbol = orTrades
+    ? AUDIT_SYMBOLS.map((s) => auditOpenRange(orTrades.filter((t) => t.symbol === s), s.replace("USDT", "")))
+    : null;
+  const orPerWeekday = orTrades
+    ? ["Mon", "Tue", "Wed", "Thu", "Fri"].map((w) => auditOpenRange(orTrades.filter((t) => t.weekday === w), w))
+    : null;
+  const orYears = orTrades ? Array.from(new Set(orTrades.map((t) => t.year))).sort() : [];
+  const orPerYear = orTrades ? orYears.map((y) => auditOpenRange(orTrades.filter((t) => t.year === y), String(y))) : null;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -1128,6 +1262,118 @@ export default function JournalPage() {
           </div>
         )}
       </section>
+
+      {/* 美股開盤突破 Lab */}
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-1">🇺🇸 美股開盤突破 Lab</div>
+        <div className="text-xs text-subtext mb-2 leading-relaxed">
+          獨立新策略，跟系統其他策略完全分開。09:30～10:00 美東時間（自動處理夏令時間）當開盤區間，10:00～10:30
+          那根K棒收盤突破區間才算數，下一根K棒開盤才進場，停損用區間對側，當天美股收盤(16:00
+          ET)強制出場。多單/空單分開統計，只算平日。
+        </div>
+        <details className="text-[11px] text-subtext mb-3">
+          <summary className="cursor-pointer select-none">這次沒做到什麼（誠實揭露）▾</summary>
+          <ul className="list-disc list-inside mt-2 space-y-1">
+            <li>只做 30 分鐘開盤區間，60 分鐘版本沒做</li>
+            <li>只做收盤突破，影線突破、收盤+成交量確認突破沒做</li>
+            <li>只測區間對側停損，ATR停損、區間倍數停損沒做</li>
+            <li>只測「美股收盤」這一種時間出場，30分/1H/2H/4H/隔日開盤沒做</li>
+            <li>沒有正式訓練/驗證/樣本外三段切分，沒有跨年份嚴謹 walk-forward</li>
+            <li>沒有 BTC 大盤環境交叉分析、沒有成交量比例分箱、沒有區間大小分箱</li>
+            <li>沒有停損倍數的參數穩定性掃描</li>
+          </ul>
+        </details>
+
+        <div className="mb-3">
+          <label className="text-xs text-subtext mb-1 block">回測期間</label>
+          <select
+            value={orDays}
+            onChange={(e) => setOrDays(Number(e.target.value))}
+            className="w-full bg-panel2 border border-border rounded-xl px-3 text-sm"
+            style={{ minHeight: 44 }}
+          >
+            {DURATION_OPTIONS.map((o) => (
+              <option key={o.days} value={o.days}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          onClick={runOpenRangeLab}
+          disabled={orLoading}
+          className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
+        >
+          {orLoading ? orProgress || "執行中…" : "執行美股開盤突破回測"}
+        </button>
+
+        {orError && <div className="text-xs text-warn mb-2">⚠️ {orError}</div>}
+
+        {orCombined && orLongs && orShorts && orPerSymbol && orPerWeekday && orPerYear && (
+          <div>
+            <div className="flex gap-2 mb-3">
+              {[1, 2, 3].map((tp) => (
+                <button
+                  key={tp}
+                  onClick={() => setOrActiveTp(tp as 1 | 2 | 3)}
+                  className={`flex-1 rounded-xl text-sm py-2 border ${
+                    orActiveTp === tp
+                      ? "bg-accent/20 text-accent border-accent/40"
+                      : "bg-panel2 text-subtext border-border"
+                  }`}
+                >
+                  TP = {tp}R
+                </button>
+              ))}
+            </div>
+
+            <div className="text-xs font-semibold mb-2 text-subtext">總覽（多單＋空單）</div>
+            <OpenRangeCard a={orCombined} />
+
+            <div className="text-xs font-semibold mb-2 text-subtext">多單 vs 空單</div>
+            <OpenRangeMiniRow a={orLongs} />
+            <div className="h-1.5" />
+            <OpenRangeMiniRow a={orShorts} />
+
+            <details className="mt-3 mb-3">
+              <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                分幣種結果（{AUDIT_SYMBOLS.length}個）▾
+              </summary>
+              <div className="space-y-1.5">
+                {orPerSymbol.map((a) => (
+                  <OpenRangeMiniRow key={a.label} a={a} />
+                ))}
+              </div>
+            </details>
+
+            <details className="mb-3">
+              <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                分星期結果 ▾
+              </summary>
+              <div className="space-y-1.5">
+                {orPerWeekday.map((a) => (
+                  <OpenRangeMiniRow key={a.label} a={a} />
+                ))}
+              </div>
+            </details>
+
+            <details className="mb-1">
+              <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                分年份結果 ▾
+              </summary>
+              <div className="space-y-1.5">
+                {orPerYear.map((a) => (
+                  <OpenRangeMiniRow key={a.label} a={a} />
+                ))}
+              </div>
+              <div className="text-[11px] text-subtext mt-2 leading-relaxed">
+                如果只有某一年特別好、其他年份全部是負的，代表這個策略可能過度依賴特定市場環境，不是穩定的優勢。
+              </div>
+            </details>
+          </div>
+        )}
+      </section>
     </main>
   );
-        }
+}
