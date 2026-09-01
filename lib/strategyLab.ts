@@ -10,15 +10,24 @@ import { IndicatorSet } from "./types";
 // 重要警告（誠實揭露，這比程式碼本身更重要）：測試好幾種策略、挑歷史表現最好的那個，
 // 本身就是統計陷阱（data snooping / multiple comparison bias）。樣本數不夠大時，
 // 測越多種策略，純粹運氣好跑出漂亮數字的機率就越高。這裡不會、也不該自動選出「最佳」策略，
-// 只提供六種邏輯上明顯不同的進場方式，讓你自己比較數字、看前半段/後半段是否一致，
+// 只提供七種邏輯上明顯不同的進場方式，讓你自己比較數字、看前半段/後半段是否一致，
 // 「穩健度分數」是綜合幾個健檢指標算出來的排序參考，不是保證有效的認證。
 //
-// 六個策略都先固定用 TP2(3R) 當出場基準（TP基準本身尚未定案，之後可以重測）。
+// 七個策略都先固定用 TP2(3R) 當出場基準（TP基準本身尚未定案，之後可以重測）。
 // 其他限制跟既有回測引擎相同：無 look-ahead bias、進場價用訊號下一根K棒開盤價、
-// 同根K棒停損優先、手續費+滑價已扣除。突破/回踩確認/波動擴張這三個是我自己操作化的
-// 定義（用具體數字門檻表達文字描述的概念），不是唯一的教科書寫法，誠實標註。
+// 同根K棒停損優先、手續費+滑價已扣除。突破/回踩確認/波動擴張/相對強弱度這幾個是我自己
+// 操作化的定義（用具體數字門檻表達文字描述的概念），不是唯一的教科書寫法，誠實標註。
+// 相對強弱度需要額外傳入 BTC 的價格序列（用時間戳對照，不是陣列索引），
+// 如果沒有提供 btcSeries，這個策略永遠不會產生訊號（不是壞掉，是資料不足）。
 
-export type StrategyId = "MOMENTUM" | "PULLBACK" | "MEANREV" | "BREAKOUT" | "BREAKOUT_RETEST" | "VOL_EXPANSION";
+export type StrategyId =
+  | "MOMENTUM"
+  | "PULLBACK"
+  | "MEANREV"
+  | "BREAKOUT"
+  | "BREAKOUT_RETEST"
+  | "VOL_EXPANSION"
+  | "RELATIVE_STRENGTH";
 
 export const STRATEGY_INFO: Record<StrategyId, { name: string; desc: string }> = {
   MOMENTUM: { name: "動能追蹤", desc: "趨勢分數≥65 且 動能分數≥65" },
@@ -27,6 +36,10 @@ export const STRATEGY_INFO: Record<StrategyId, { name: string; desc: string }> =
   BREAKOUT: { name: "突破", desc: "價格創20根K棒新高，且成交量放大" },
   BREAKOUT_RETEST: { name: "突破+回踩確認", desc: "近期突破前高後，價格回踩到前高附近(0~2%)且RSI降溫" },
   VOL_EXPANSION: { name: "波動擴張", desc: "ATR比10根K棒前明顯放大(≥1.3倍)，且趨勢≥55" },
+  RELATIVE_STRENGTH: {
+    name: "相對強弱度",
+    desc: "過去20根K棒漲幅比BTC同期高出8%以上，且BTC本身沒有明顯走弱，RSI未過熱",
+  },
 };
 
 interface EntryContext {
@@ -37,6 +50,8 @@ interface EntryContext {
   priorLevel: number; // 更早之前(第8~30根K棒前)的最高價，當作「前高」參考
   brokeOutRecently: boolean; // 最近8根K棒內是否曾經突破 priorLevel
   atrExpanding: boolean; // 目前ATR是否比10根K棒前明顯放大
+  relStrength: number | null; // 過去20根K棒漲幅 減去 BTC同期漲幅（百分點）；沒有BTC對照資料時為null
+  btcReturn: number | null; // BTC同期報酬率（百分比），沒有對照資料時為null
 }
 
 function checkEntry(strategy: StrategyId, ctx: EntryContext): boolean {
@@ -52,11 +67,20 @@ function checkEntry(strategy: StrategyId, ctx: EntryContext): boolean {
     const distToLevelPct = ctx.priorLevel > 0 ? ((ctx.priorLevel - price) / ctx.priorLevel) * 100 : 999;
     return ctx.brokeOutRecently && distToLevelPct >= 0 && distToLevelPct <= 2 && ind.rsi14 >= 40 && ind.rsi14 <= 65;
   }
+  if (strategy === "RELATIVE_STRENGTH") {
+    if (ctx.relStrength === null || ctx.btcReturn === null) return false;
+    return ctx.relStrength >= 8 && ctx.btcReturn >= -2 && ind.rsi14 <= 75;
+  }
   // VOL_EXPANSION
   return ctx.atrExpanding && ind.trendScore >= 55;
 }
 
-export function runStrategyBacktest(strategy: StrategyId, symbol: string, candles: Candle[]): TpVariantTrade[] {
+export function runStrategyBacktest(
+  strategy: StrategyId,
+  symbol: string,
+  candles: Candle[],
+  btcSeries?: Map<number, number> | null
+): TpVariantTrade[] {
   const closes = candles.map((c) => c.close);
   const trades: TpVariantTrade[] = [];
 
@@ -94,7 +118,31 @@ export function runStrategyBacktest(strategy: StrategyId, symbol: string, candle
       }
     }
 
-    const ctx: EntryContext = { ind, price, volumeRatio, recentHigh20, priorLevel, brokeOutRecently, atrExpanding };
+    // 相對強弱度：用時間戳對照 BTC 同一時刻的價格，避免用陣列索引對齊（不同幣種抓到的K棒數量可能有微小差異）
+    let relStrength: number | null = null;
+    let btcReturn: number | null = null;
+    if (btcSeries && i >= 20) {
+      const btcNow = btcSeries.get(candles[i].time);
+      const btcPast = btcSeries.get(candles[i - 20].time);
+      const altPast = closes[i - 20];
+      if (btcNow !== undefined && btcPast !== undefined && btcPast > 0 && altPast > 0) {
+        const altReturn = ((price - altPast) / altPast) * 100;
+        btcReturn = ((btcNow - btcPast) / btcPast) * 100;
+        relStrength = altReturn - btcReturn;
+      }
+    }
+
+    const ctx: EntryContext = {
+      ind,
+      price,
+      volumeRatio,
+      recentHigh20,
+      priorLevel,
+      brokeOutRecently,
+      atrExpanding,
+      relStrength,
+      btcReturn,
+    };
 
     if (checkEntry(strategy, ctx)) {
       const entryBarIdx = i + 1;
@@ -162,6 +210,12 @@ export function runStrategyBacktest(strategy: StrategyId, symbol: string, candle
     i++;
   }
   return trades;
+}
+
+export function buildBtcSeries(candles: Candle[]): Map<number, number> {
+  const m = new Map<number, number>();
+  candles.forEach((c) => m.set(c.time, c.close));
+  return m;
 }
 
 export interface StrategyLabResult {
