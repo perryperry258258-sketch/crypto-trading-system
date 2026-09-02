@@ -1,21 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useMarketData } from "@/lib/useMarketData";
+import { fetchKlines } from "@/lib/binance";
+import { evaluateLiveSignal, LiveSignal } from "@/lib/retestEngine";
 import { getETInfo } from "@/lib/openRangeLab";
-import { loadSignalRecords, auditSignalRecords, SignalRecord } from "@/lib/signalLog";
+import { upsertFromLiveSignal } from "@/lib/signalLog";
+import { StatusDot } from "@/components/ui";
+import { SIGNAL_STATE_THEME } from "@/components/statusTheme";
 
-// 市場頁：中性市場資料（BTC/ETH/大盤/恐慌貪婪）＋美股開盤時段狀態＋回踩引擎歷史訊號紀錄。
-// 舊系統的技術指標大盤判斷（regime）已經整套移除。
+// UI/UX改版：市場頁改成乾淨的8幣種表格，大盤數據收進可折疊區塊，
+// 訊號紀錄移到新的「歷史」頁。抓取/判斷邏輯完全不變。
 
 function fmt(n: number) {
   if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return n.toPrecision(4);
 }
 
+const AUDIT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT"];
+const ENGINE_WINDOW = 60;
+const ENGINE_TP = 1;
+
 type SessionState = "WEEKEND" | "BEFORE_OPEN" | "MARKET_HOURS" | "AFTER_CLOSE";
 
-function getSessionStatus(): { state: SessionState; label: string; note: string } {
+function getSessionStatus(): { state: SessionState; label: string; color: "green" | "yellow" | "grey"; note: string } {
   const info = getETInfo(Date.now() / 1000);
   const weekday = info.weekday;
   const minutesNow = info.hour * 60 + info.minute;
@@ -23,106 +32,129 @@ function getSessionStatus(): { state: SessionState; label: string; note: string 
   const closeMinutes = 16 * 60;
 
   if (!["Mon", "Tue", "Wed", "Thu", "Fri"].includes(weekday)) {
-    return { state: "WEEKEND", label: "⚪ 非交易日", note: "美股週末休市，回踩引擎不會產生新訊號。" };
+    return { state: "WEEKEND", label: "非交易日", color: "grey", note: "美股週末休市，回踩引擎不會產生新訊號。" };
   }
   if (minutesNow < openMinutes) {
     return {
       state: "BEFORE_OPEN",
-      label: "🟡 尚未開盤",
+      label: "尚未開盤",
+      color: "yellow",
       note: `美東時間現在 ${String(info.hour).padStart(2, "0")}:${String(info.minute).padStart(2, "0")}，等待09:30開盤。`,
     };
   }
   if (minutesNow < closeMinutes) {
-    return { state: "MARKET_HOURS", label: "🟢 交易時段中", note: "美股盤中，回踩引擎正在運作。" };
+    return { state: "MARKET_HOURS", label: "交易時段中", color: "green", note: "美股盤中，回踩引擎正在運作。" };
   }
-  return { state: "AFTER_CLOSE", label: "⚪ 已收盤", note: "美股已收盤，等待下一個交易日09:30開盤。" };
+  return { state: "AFTER_CLOSE", label: "已收盤", color: "grey", note: "美股已收盤，等待下一個交易日09:30開盤。" };
 }
 
 export default function MarketPage() {
-  const { btc, eth, global, fearGreed, loading, reload, errors, lastUpdated } = useMarketData();
+  const { coins, global, fearGreed, loading, reload, errors } = useMarketData();
   const [session, setSession] = useState(getSessionStatus());
-  const [records, setRecords] = useState<SignalRecord[]>([]);
+  const [signals, setSignals] = useState<Record<string, LiveSignal>>({});
+  const [signalsLoading, setSignalsLoading] = useState(false);
+
+  const runCheck = async () => {
+    setSignalsLoading(true);
+    const map: Record<string, LiveSignal> = {};
+    for (const symbol of AUDIT_SYMBOLS) {
+      try {
+        const candles = await fetchKlines(symbol, "5m", 288);
+        const signal = evaluateLiveSignal(symbol, candles, ENGINE_WINDOW, ENGINE_TP, 0.3);
+        map[symbol] = signal;
+        upsertFromLiveSignal(signal, ENGINE_TP);
+      } catch {
+        // 跳過失敗的幣種
+      }
+    }
+    setSignalsLoading(false);
+    setSignals(map);
+  };
 
   useEffect(() => {
     setSession(getSessionStatus());
     const id = setInterval(() => setSession(getSessionStatus()), 30_000);
-    setRecords(loadSignalRecords());
+    runCheck();
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const report = records.length ? auditSignalRecords(records) : null;
-  const winCount = records.filter((r) => r.status === "WIN").length;
-  const lossCount = records.filter((r) => r.status === "LOSS").length;
-  const expiredCount = records.filter((r) => r.status === "EXPIRED").length;
-  const openCount = records.filter((r) => r.status === "OPEN").length;
+  const handleRefresh = () => {
+    reload();
+    runCheck();
+  };
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
       <header className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-display font-bold tracking-tight">市場</h1>
+        <h1 className="text-xl font-display font-bold tracking-tight">市場監控</h1>
         <button
-          onClick={reload}
-          className="btn-primary px-3 text-xs text-subtext border border-border active:scale-95 transition"
+          onClick={handleRefresh}
+          className="w-9 h-9 rounded-full flex items-center justify-center border border-border active:scale-90 transition text-subtext"
+          aria-label="更新"
         >
-          {loading ? "更新中" : "🔄 更新"}
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={loading || signalsLoading ? "animate-spin" : ""}>
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+          </svg>
         </button>
       </header>
 
       {errors.length > 0 && (
-        <div className="mb-4 rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn space-y-0.5">
+        <div className="mb-3 rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn space-y-0.5">
           {errors.map((e, i) => (
-            <div key={i} className="break-words">
-              ⚠️ {e}
-            </div>
+            <div key={i}>{e}</div>
           ))}
-          <div className="text-subtext pt-1">本次更新部分失敗，以下顯示最近一次成功取得的資料，按右上角「更新」重試。</div>
         </div>
       )}
 
       {/* 美股開盤時段狀態 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-        <div className="text-xs text-subtext mb-1">美股開盤時段</div>
-        <div className="text-xl font-display font-bold mb-1">{session.label}</div>
-        <div className="text-sm text-subtext break-words">{session.note}</div>
+        <div className="text-xs text-subtext mb-2">美股開盤時段</div>
+        <StatusDot color={session.color} label={session.label} size="md" />
+        <div className="text-xs text-subtext mt-2 break-words">{session.note}</div>
       </section>
 
-      {/* BTC/ETH 即時價格 */}
-      {[btc, eth].map(
-        (c) =>
-          c && (
-            <section key={c.id} className="rounded-2xl border border-border bg-panel p-4 mb-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-lg font-display font-bold">{c.symbol}</span>
-                <span className="text-lg font-semibold numeric-safe">${fmt(c.price)}</span>
-              </div>
-              <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                <div>
-                  <div className="text-subtext mb-0.5">24H</div>
-                  <div className={`font-semibold numeric-safe ${c.change24h >= 0 ? "text-bull" : "text-bear"}`}>
-                    {c.change24h >= 0 ? "+" : ""}
-                    {c.change24h.toFixed(2)}%
-                  </div>
-                </div>
-                <div>
-                  <div className="text-subtext mb-0.5">24H高</div>
-                  <div className="font-semibold numeric-safe">${fmt(c.high24h)}</div>
-                </div>
-                <div>
-                  <div className="text-subtext mb-0.5">24H低</div>
-                  <div className="font-semibold numeric-safe">${fmt(c.low24h)}</div>
-                </div>
-              </div>
-            </section>
-          )
-      )}
+      {/* 8幣種表格 */}
+      <section className="rounded-2xl border border-border bg-panel overflow-hidden mb-3">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-subtext border-b border-border">
+              <th className="text-left font-normal py-2.5 px-3">幣種</th>
+              <th className="text-right font-normal py-2.5 px-3">價格</th>
+              <th className="text-right font-normal py-2.5 px-3">24H</th>
+              <th className="text-right font-normal py-2.5 px-3">狀態</th>
+            </tr>
+          </thead>
+          <tbody>
+            {AUDIT_SYMBOLS.map((symbol) => {
+              const coin = coins.find((c) => c.id === symbol);
+              const signal = signals[symbol];
+              const theme = signal ? SIGNAL_STATE_THEME[signal.state] : null;
+              return (
+                <tr key={symbol} className="border-b border-border last:border-0">
+                  <td className="py-2.5 px-3 font-medium">{symbol.replace("USDT", "")}</td>
+                  <td className="text-right py-2.5 px-3 numeric-safe">{coin ? fmt(coin.price) : "—"}</td>
+                  <td className={`text-right py-2.5 px-3 numeric-safe ${coin && coin.change24h >= 0 ? "text-bull" : "text-bear"}`}>
+                    {coin ? `${coin.change24h >= 0 ? "+" : ""}${coin.change24h.toFixed(1)}%` : "—"}
+                  </td>
+                  <td className="text-right py-2.5 px-3">
+                    {theme ? <StatusDot color={theme.color} label={theme.label} /> : <span className="text-subtext text-xs">—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
 
-      {/* 大盤數據（中性參考資料） */}
-      {global && (
-        <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-          <div className="text-xs text-subtext mb-2">大盤數據</div>
-          <div className="grid grid-cols-2 gap-2 text-sm">
+      {/* 大盤數據（折疊，中性參考資料） */}
+      <details className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <summary className="text-xs text-subtext cursor-pointer select-none">大盤數據 ▾</summary>
+        {global && (
+          <div className="grid grid-cols-2 gap-2 text-sm mt-3">
             <div className="rounded-xl bg-panel2 p-3">
-              <div className="text-xs text-subtext mb-0.5">BTC 市占率（Dominance）</div>
+              <div className="text-xs text-subtext mb-0.5">BTC 市占率</div>
               <div className="font-semibold numeric-safe">{global.btcDominance.toFixed(1)}%</div>
             </div>
             <div className="rounded-xl bg-panel2 p-3">
@@ -134,87 +166,15 @@ export default function MarketPage() {
             </div>
             <div className="rounded-xl bg-panel2 p-3 col-span-2">
               <div className="text-xs text-subtext mb-0.5">恐慌貪婪指數</div>
-              <div className="font-semibold numeric-safe">
-                {fearGreed ? `${fearGreed.value} (${fearGreed.classification})` : "—"}
-              </div>
+              <div className="font-semibold numeric-safe">{fearGreed ? `${fearGreed.value}（${fearGreed.classification}）` : "—"}</div>
             </div>
-          </div>
-        </section>
-      )}
-
-      {/* 回踩引擎歷史訊號紀錄總覽 */}
-      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-        <div className="text-xs text-subtext mb-2">回踩引擎歷史訊號（本機紀錄）</div>
-        {records.length === 0 ? (
-          <div className="text-sm text-subtext text-center py-3">尚無訊號紀錄，去「機會」頁或首頁檢查一次即時狀態就會開始累積。</div>
-        ) : (
-          <div>
-            <div className="grid grid-cols-4 gap-2 text-center text-xs mb-3">
-              <div>
-                <div className="text-subtext">進行中</div>
-                <div className="font-semibold numeric-safe">{openCount}</div>
-              </div>
-              <div>
-                <div className="text-subtext">達標</div>
-                <div className="font-semibold numeric-safe text-bull">{winCount}</div>
-              </div>
-              <div>
-                <div className="text-subtext">停損</div>
-                <div className="font-semibold numeric-safe text-bear">{lossCount}</div>
-              </div>
-              <div>
-                <div className="text-subtext">過期</div>
-                <div className="font-semibold numeric-safe">{expiredCount}</div>
-              </div>
-            </div>
-            {report && report.sampleCount > 0 && (
-              <div className="grid grid-cols-2 gap-2 text-center text-xs mb-3">
-                <div className="rounded-xl bg-panel2 p-2">
-                  <div className="text-subtext">勝率</div>
-                  <div className="font-semibold numeric-safe">{report.winRate.toFixed(1)}%</div>
-                </div>
-                <div className="rounded-xl bg-panel2 p-2">
-                  <div className="text-subtext">期望值</div>
-                  <div className={`font-semibold numeric-safe ${report.expectancy >= 0 ? "text-bull" : "text-bear"}`}>
-                    {report.expectancy >= 0 ? "+" : ""}
-                    {report.expectancy.toFixed(2)}R
-                  </div>
-                </div>
-              </div>
-            )}
-            <details>
-              <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
-                最近紀錄（共{records.length}筆）▾
-              </summary>
-              <div className="space-y-1.5">
-                {[...records]
-                  .reverse()
-                  .slice(0, 20)
-                  .map((r) => (
-                    <div key={r.id} className="flex items-center justify-between text-xs rounded-lg bg-panel2 px-3 py-2">
-                      <span className="font-medium w-14 shrink-0">{r.symbol.replace("USDT", "")}</span>
-                      <span
-                        className={
-                          r.status === "WIN" ? "text-bull" : r.status === "LOSS" ? "text-bear" : "text-subtext"
-                        }
-                      >
-                        {r.status}
-                      </span>
-                      <span className="numeric-safe">
-                        {r.rMultiple != null ? `${r.rMultiple >= 0 ? "+" : ""}${r.rMultiple.toFixed(2)}R` : "—"}
-                      </span>
-                      <span className="text-subtext">{new Date(r.refTime * 1000).toLocaleDateString("zh-TW")}</span>
-                    </div>
-                  ))}
-              </div>
-            </details>
           </div>
         )}
-      </section>
+      </details>
 
-      <footer className="text-center text-[11px] text-subtext pb-6">
-        {lastUpdated ? `更新時間：${lastUpdated.toLocaleString()}` : "尚未更新"}
-      </footer>
+      <Link href="/history" className="text-xs text-bull inline-block px-1">
+        查看歷史訊號紀錄 →
+      </Link>
     </main>
   );
 }
