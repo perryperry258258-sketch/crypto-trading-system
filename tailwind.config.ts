@@ -17,16 +17,18 @@ const config: Config = {
     },
     extend: {
       colors: {
-        bg: "#0B0E11",
-        panel: "#121620",
+        bg: "#0A0E14",
+        panel: "#12161F",
         panel2: "#171C28",
         border: "#232937",
         text: "#E7EAF0",
         subtext: "#8A93A6",
-        bull: "#20C97A",
-        bear: "#F0475B",
+        bull: "#3ECF8E",
+        brand: "#3ECF8E",
+        bear: "#F2495C",
         warn: "#E8B341",
-        accent: "#4C8DFF",
+        info: "#4C8DFF",
+        accent: "#3ECF8E",
         s: "#FF5A36",
       },
       fontFamily: {
