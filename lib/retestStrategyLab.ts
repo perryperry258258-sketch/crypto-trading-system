@@ -17,11 +17,11 @@ import { FEE_PCT, SLIPPAGE_PCT } from "./backtest";
 // - TP：分開測 1R / 1.5R / 2R / 3R 四檔，找哪個對這個訊號最有利。
 // - 出場時間上限：4小時（跟事件研究的追蹤窗口一致）。
 // - 手續費+滑價已扣除。
+// - 支援指定K棒範圍(rangeStart/rangeEnd)，用來做訓練/驗證/樣本外三段式切分。
 //
 // 【誠實揭露：這次沒做的】
 // - 只測「等回踩」這個進場方式，沒有同時對照「直接進場」接TP/SL（先前已經證實直接進場較差，不重複做）
 // - 停損只測Reference區間對側，沒有測ATR停損或其他停損倍數
-// - 沒有做正式的訓練/驗證/樣本外切分
 // - 沒有分年份、沒有BTC市場環境交叉分析
 // - 最長開放到730天（2年）；730天在5分鐘K線下資料量非常大，手機瀏覽器執行時間可能長達10幾分鐘，
 //   務必保持螢幕開啟、不要切換到其他App，否則可能被系統中斷
@@ -47,12 +47,15 @@ export function runRetestStrategyBacktest(
   candles5m: Candle[],
   windowMinutes: 30 | 60 | 90 | 120,
   tpMultiple: number,
-  retestZonePct: number = DEFAULT_RETEST_ZONE_PCT
+  retestZonePct: number = DEFAULT_RETEST_ZONE_PCT,
+  rangeStart: number = 0,
+  rangeEnd: number = candles5m.length
 ): RetestTrade[] {
   const trades: RetestTrade[] = [];
   const windowBars = windowMinutes / 5;
+  const loopEnd = Math.min(rangeEnd, candles5m.length - windowBars - MAX_TRACK_BARS);
 
-  for (let i = 0; i < candles5m.length - windowBars - MAX_TRACK_BARS; i++) {
+  for (let i = rangeStart; i < loopEnd; i++) {
     const first = candles5m[i];
     const info = getETInfo(first.time);
     if (info.hour !== 9 || info.minute !== 30 || !WEEKDAYS.includes(info.weekday)) continue;
@@ -239,3 +242,20 @@ export const RETEST_STRATEGY_DURATION_OPTIONS = [
   { label: "365天（約1年）", days: 365 },
   { label: "730天（約2年，非常久，務必保持螢幕開啟）", days: 730 },
 ];
+
+// 訓練/驗證/樣本外三段切分：前60%當訓練段、中間20%當驗證段、最後20%完全不能拿來調參，
+// 只能用來最後檢驗一次。依進場時間排序後照比例切，不是隨機打散（保留時間先後順序）。
+export function splitTrainValOOS(trades: RetestTrade[]): {
+  train: RetestTrade[];
+  validation: RetestTrade[];
+  oos: RetestTrade[];
+} {
+  const sorted = [...trades].sort((a, b) => a.entryTime - b.entryTime);
+  const trainEnd = Math.floor(sorted.length * 0.6);
+  const valEnd = Math.floor(sorted.length * 0.8);
+  return {
+    train: sorted.slice(0, trainEnd),
+    validation: sorted.slice(trainEnd, valEnd),
+    oos: sorted.slice(valEnd),
+  };
+}
