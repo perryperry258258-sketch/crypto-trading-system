@@ -4,8 +4,8 @@ import BottomNav from "@/components/BottomNav";
 import OfflineBanner from "@/components/OfflineBanner";
 
 export const metadata: Metadata = {
-  title: "交易決策系統",
-  description: "加密貨幣資金階段交易決策儀表板（僅供決策參考，非投資建議，不保證獲利）",
+  title: "A Signal",
+  description: "只在真正符合條件時告訴我——回踩策略即時訊號系統（僅供決策參考，非投資建議，不保證獲利）",
   manifest: "/manifest.json",
   icons: {
     icon: "/icon-192.png",
@@ -17,7 +17,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  themeColor: "#0B0E11",
+  themeColor: "#0A0E14",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
