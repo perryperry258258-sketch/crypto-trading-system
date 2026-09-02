@@ -45,9 +45,10 @@ const lockLabel: Record<string, { label: string; note: string; className: string
 
 const AUDIT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT"];
 const VB_DURATION_OPTIONS = [
-  { label: "30天", days: 30 },
-  { label: "60天", days: 60 },
-  { label: "90天（較久，5分鐘資料量大）", days: 90 },
+  { label: "90天", days: 90 },
+  { label: "180天（半年）", days: 180 },
+  { label: "365天（1年，較久）", days: 365 },
+  { label: "730天（2年，非常久，務必保持螢幕開啟）", days: 730 },
 ];
 const VB_WINDOW_OPTIONS: { label: string; value: 30 | 60 | 90 | 120 }[] = [
   { label: "30分鐘", value: 30 },
@@ -610,7 +611,7 @@ export default function JournalPage() {
             <li>只測「等回踩」這個進場方式，不重複測直接進場（已證實較差）</li>
             <li>停損只測Reference區間對側，沒有測ATR停損或其他倍數</li>
             <li>沒有正式訓練/驗證/樣本外切分、沒有分年份、沒有BTC市場環境交叉分析</li>
-            <li>1-3年的5分鐘資料量太大，手機瀏覽器不易穩定抓取完成，最長只到365天</li>
+            <li>最長開放到730天（2年）；2年的5分鐘資料量非常大，執行可能長達10幾分鐘，務必保持螢幕開啟</li>
           </ul>
         </details>
 
