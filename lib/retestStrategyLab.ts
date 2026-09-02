@@ -23,7 +23,8 @@ import { FEE_PCT, SLIPPAGE_PCT } from "./backtest";
 // - 停損只測Reference區間對側，沒有測ATR停損或其他停損倍數
 // - 沒有做正式的訓練/驗證/樣本外切分
 // - 沒有分年份、沒有BTC市場環境交叉分析
-// - 1-3年的資料量在5分鐘K線下太大，手機瀏覽器不易穩定抓取完成，最長只到365天
+// - 最長開放到730天（2年）；730天在5分鐘K線下資料量非常大，手機瀏覽器執行時間可能長達10幾分鐘，
+//   務必保持螢幕開啟、不要切換到其他App，否則可能被系統中斷
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
 const MAX_TRACK_BARS = 48; // 追蹤4小時（5分鐘K棒數）
@@ -235,5 +236,6 @@ export const RETEST_STRATEGY_TP_OPTIONS = [1, 1.5, 2, 3];
 export const RETEST_STRATEGY_DURATION_OPTIONS = [
   { label: "90天", days: 90 },
   { label: "180天（約半年）", days: 180 },
-  { label: "365天（約1年，較久）", days: 365 },
+  { label: "365天（約1年）", days: 365 },
+  { label: "730天（約2年，非常久，務必保持螢幕開啟）", days: 730 },
 ];
