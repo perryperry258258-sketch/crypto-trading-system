@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useMarketData } from "@/lib/useMarketData";
-import { fetchKlinesHistory } from "@/lib/binance";
+import { fetchKlinesHistory, Candle } from "@/lib/binance";
 import {
   runBacktest,
   auditTrades,
@@ -54,6 +54,7 @@ import {
   VolumeBreakoutReport,
   VOLUME_RATIO_BINS,
   CLV_BINS,
+  RETEST_ZONE_OPTIONS,
 } from "@/lib/volumeBreakoutLab";
 import EquityCurve from "@/components/EquityCurve";
 
@@ -672,6 +673,13 @@ export default function JournalPage() {
   const [vbProgress, setVbProgress] = useState("");
   const [vbEvents, setVbEvents] = useState<VolumeBreakoutEvent[] | null>(null);
 
+  const [vzLoading, setVzLoading] = useState(false);
+  const [vzError, setVzError] = useState<string | null>(null);
+  const [vzProgress, setVzProgress] = useState("");
+  const [vzResults, setVzResults] = useState<{ zone: number; direct: VolumeBreakoutReport; retest: VolumeBreakoutReport }[] | null>(
+    null
+  );
+
   const lock = lockLabel[capitalState.profitLockLevel];
 
   const runAudit = async () => {
@@ -1005,6 +1013,44 @@ export default function JournalPage() {
   const vbDirectReport = vbEvents ? auditVolumeBreakout(vbEvents, "直接進場（全部事件）") : null;
   const vbRetestReport = vbEvents ? toRetestReport(vbEvents, "等回踩才進場") : null;
   const vbRetestFoundRate = vbEvents && vbEvents.length ? (vbEvents.filter((e) => e.retestFound).length / vbEvents.length) * 100 : 0;
+
+  const runRetestStabilityTest = async () => {
+    setVzLoading(true);
+    setVzError(null);
+    setVzResults(null);
+    const candlesBySymbol: Record<string, Candle[]> = {};
+    let successCount = 0;
+    for (const symbol of AUDIT_SYMBOLS) {
+      setVzProgress(`抓取 ${symbol.replace("USDT", "")} 5分鐘資料中…`);
+      try {
+        const candles = await fetchKlinesHistory(symbol, "5m", vbDays * 288);
+        if (candles.length >= 500) {
+          successCount++;
+          candlesBySymbol[symbol] = candles;
+        }
+      } catch {
+        // 跳過失敗的幣種
+      }
+    }
+    setVzLoading(false);
+    setVzProgress("");
+    if (successCount === 0) {
+      setVzError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
+      return;
+    }
+    const results = RETEST_ZONE_OPTIONS.map((zone) => {
+      const zoneEvents: VolumeBreakoutEvent[] = [];
+      Object.keys(candlesBySymbol).forEach((symbol) => {
+        zoneEvents.push(...runVolumeBreakoutEventStudy(symbol, candlesBySymbol[symbol], vbWindow, zone));
+      });
+      return {
+        zone,
+        direct: auditVolumeBreakout(zoneEvents, `直接進場`),
+        retest: toRetestReport(zoneEvents, `等回踩(±${zone}%)`),
+      };
+    });
+    setVzResults(results);
+  };
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -1712,9 +1758,38 @@ export default function JournalPage() {
                 CLV接近1代表Reference Candle收在當根最高點附近（偏多方主導），接近0代表收在最低點附近（偏空方主導）。
               </div>
             </details>
+
+            <div className="text-xs font-semibold mb-2 text-subtext mt-3">回踩容忍度穩定性測試</div>
+            <div className="text-[11px] text-subtext mb-2 leading-relaxed">
+              同時測 ±0.2% / ±0.3% / ±0.5% 三個回踩容忍度，看「等回踩比較好」這個結論是不是三個都成立——如果只有0.3%特別好、鄰近值掉下去，代表是矇到的，不是真的優勢。用同一批已經抓好的5分鐘資料重跑，不用重抓。
+            </div>
+            <button
+              onClick={runRetestStabilityTest}
+              disabled={vzLoading}
+              className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
+            >
+              {vzLoading ? vzProgress || "執行中…" : "執行穩定性測試"}
+            </button>
+            {vzError && <div className="text-xs text-warn mb-2">⚠️ {vzError}</div>}
+            {vzResults && (
+              <div className="space-y-1.5">
+                {vzResults.map((r) => (
+                  <div key={r.zone}>
+                    <div className="text-[11px] text-subtext mb-1">±{r.zone}%</div>
+                    <VolumeBreakoutMiniRow r={r.direct} />
+                    <div className="h-1" />
+                    <VolumeBreakoutMiniRow r={r.retest} />
+                    <div className="h-2" />
+                  </div>
+                ))}
+                <div className="text-[11px] text-subtext leading-relaxed">
+                  三個容忍度裡，如果「等回踩」那一行的達1%機率都穩定高於「直接進場」那一行，這個發現比較站得住腳；如果只有某一個容忍度特別突出，其他兩個沒有同樣的差距，就要當成雜訊看待。
+                </div>
+              </div>
+            )}
           </div>
         )}
       </section>
     </main>
   );
-      }
+            }
