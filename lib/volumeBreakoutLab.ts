@@ -13,6 +13,7 @@ import { getETInfo } from "./openRangeLab";
 // - CLV（Close Location Value）分箱：(收盤-最低)/(最高-最低)，衡量 Reference Candle
 //   收在當根區間的哪個位置。
 // - 95% 信賴區間（Wilson score interval），不是只給單一百分比數字。
+// - 回踩容忍度可設參數（0.2%/0.3%/0.5%），用來做參數穩定性測試。
 //
 // 【誠實揭露：無 look-ahead bias】Reference Candle 是用完整觀察窗口的資料選出來的，
 // 但突破偵測的迴圈是從「觀察窗口結束後」才開始找（i + windowBars 之後），
@@ -29,7 +30,7 @@ import { getETInfo } from "./openRangeLab";
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
 const CHECKPOINTS = { m30: 6, h1: 12, h2: 24, h4: 48 }; // 5分鐘K棒數
 const MAX_TRACK_BARS = 48; // 追蹤4小時
-const RETEST_ZONE_PCT = 0.3; // 回踩容許範圍：距離Reference水平±0.3%內算「碰到」
+const DEFAULT_RETEST_ZONE_PCT = 0.3; // 預設回踩容許範圍：距離Reference水平±0.3%內算「碰到」
 
 function computeSnapshots(
   candles5m: Candle[],
@@ -119,7 +120,8 @@ export interface VolumeBreakoutEvent {
 export function runVolumeBreakoutEventStudy(
   symbol: string,
   candles5m: Candle[],
-  windowMinutes: 30 | 60 | 90 | 120
+  windowMinutes: 30 | 60 | 90 | 120,
+  retestZonePct: number = DEFAULT_RETEST_ZONE_PCT
 ): VolumeBreakoutEvent[] {
   const events: VolumeBreakoutEvent[] = [];
   const windowBars = windowMinutes / 5;
@@ -192,7 +194,7 @@ export function runVolumeBreakoutEventStudy(
           retestBarIdx === null &&
           j > breakoutIdx &&
           !closedBackThrough &&
-          bar.low <= refHigh * (1 + RETEST_ZONE_PCT / 100)
+          bar.low <= refHigh * (1 + retestZonePct / 100)
         ) {
           retestBarIdx = j;
         }
@@ -207,7 +209,7 @@ export function runVolumeBreakoutEventStudy(
           retestBarIdx === null &&
           j > breakoutIdx &&
           !closedBackThrough &&
-          bar.high >= refLow * (1 - RETEST_ZONE_PCT / 100)
+          bar.high >= refLow * (1 - retestZonePct / 100)
         ) {
           retestBarIdx = j;
         }
@@ -359,6 +361,8 @@ export function toRetestReport(events: VolumeBreakoutEvent[], label: string): Vo
   }));
   return auditVolumeBreakout(mapped, label);
 }
+
+export const RETEST_ZONE_OPTIONS = [0.2, 0.3, 0.5];
 
 export const VOLUME_RATIO_BINS: { label: string; min: number; max: number }[] = [
   { label: "<0.8", min: -Infinity, max: 0.8 },
