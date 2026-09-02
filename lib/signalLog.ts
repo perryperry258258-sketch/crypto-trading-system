@@ -39,7 +39,7 @@ export interface SignalRecord {
   lastUpdatedAt: number;
 }
 
-const RECORD_KEY = "cts_signal_records_v1";
+const RECORD_KEY = "cts_signal_records_v2"; // v2：資料源從現貨改永續合約，版本升級讓舊的現貨訊號紀錄自動失效，不會混進來比較
 const MAX_RECORDS = 500;
 
 export function loadSignalRecords(): SignalRecord[] {
@@ -161,7 +161,7 @@ export interface OosSummary {
   computedAt: number;
 }
 
-const OOS_SUMMARY_KEY = "cts_oos_summary_v1";
+const OOS_SUMMARY_KEY = "cts_oos_summary_v2"; // v2：資料源從現貨改永續合約，舊的現貨樣本外驗證結果不再適用
 
 export function saveOosSummary(summary: OosSummary) {
   try {
