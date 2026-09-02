@@ -66,11 +66,6 @@ const CB_WINDOW_OPTIONS: { label: string; value: 30 | 60 | 90 | 120 }[] = [
 ];
 const OOS_TP = 1; // 暫定正式交易版本：TP=1R，風險調整後最合理（詳見對話紀錄）
 
-function fmt(n: number) {
-  if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  return n.toPrecision(4);
-}
-
 function VolumeBreakoutCard({ r }: { r: VolumeBreakoutReport }) {
   return (
     <div className="rounded-xl bg-panel2 p-3 mb-3">
@@ -432,7 +427,7 @@ function PaperComparisonCard({ backtest, paper }: { backtest: RetestStrategyRepo
 }
 
 export default function JournalPage() {
-  const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
+  const { capitalState } = useMarketData();
 
   const [cbDays, setCbDays] = useState(365);
   const [cbWindow, setCbWindow] = useState<30 | 60 | 90 | 120>(60);
@@ -610,98 +605,14 @@ export default function JournalPage() {
         </div>
       </section>
 
-      {/* 模擬交易績效 */}
-      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-        <div className="text-sm font-semibold mb-1">📈 模擬交易（Paper Trading）績效</div>
-        <div className="text-xs text-subtext mb-3 leading-relaxed">
-          系統偵測到 S/A 級機會會自動開立模擬部位，不動用真錢。只認「碰到達標(TP1)」或「碰到停損」兩種結果。
-        </div>
-        {paperStats.totalTrades === 0 ? (
-          <div className="text-sm text-subtext text-center py-2">尚無已平倉的模擬交易紀錄</div>
-        ) : (
-          <>
-            <div className="mb-3">
-              <EquityCurve rMultiples={paperClosed.map((t) => t.rMultiple)} />
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-center text-sm">
-              <div className="rounded-xl bg-panel2 p-3">
-                <div className="text-xs text-subtext">勝率</div>
-                <div className="font-semibold numeric-safe">{paperStats.winRate.toFixed(1)}%</div>
-              </div>
-              <div className="rounded-xl bg-panel2 p-3">
-                <div className="text-xs text-subtext">總交易數</div>
-                <div className="font-semibold numeric-safe">{paperStats.totalTrades}</div>
-              </div>
-              <div className="rounded-xl bg-panel2 p-3">
-                <div className="text-xs text-subtext">平均報酬（R）</div>
-                <div className={`font-semibold numeric-safe ${paperStats.avgR >= 0 ? "text-bull" : "text-bear"}`}>
-                  {paperStats.avgR.toFixed(2)}
-                </div>
-              </div>
-              <div className="rounded-xl bg-panel2 p-3">
-                <div className="text-xs text-subtext">獲利因子</div>
-                <div className="font-semibold numeric-safe">
-                  {paperStats.profitFactor === Infinity ? "∞" : paperStats.profitFactor.toFixed(2)}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-      </section>
-
-      {/* 未平倉模擬部位 */}
-      {paperOpen.length > 0 && (
-        <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-          <div className="text-sm font-semibold mb-2">未平倉模擬部位（{paperOpen.length}）</div>
-          <div className="space-y-2">
-            {paperOpen.map((p) => {
-              const live = coins.find((c) => c.symbol === p.symbol);
-              return (
-                <div key={p.id} className="rounded-xl bg-panel2 p-3 text-xs">
-                  <div className="flex justify-between mb-1">
-                    <span className="font-semibold">{p.symbol}</span>
-                    <span className="text-subtext">{p.grade}級</span>
-                  </div>
-                  <div className="flex justify-between text-subtext">
-                    <span>進場 {fmt(p.entryPrice)}</span>
-                    <span>現價 {live ? fmt(live.price) : "—"}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* 已平倉紀錄 */}
-      {paperClosed.length > 0 && (
-        <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-          <div className="text-sm font-semibold mb-2">最近平倉紀錄</div>
-          <div className="space-y-2">
-            {[...paperClosed]
-              .reverse()
-              .slice(0, 10)
-              .map((t) => (
-                <div key={t.id} className="flex justify-between items-center text-xs rounded-lg bg-panel2 px-3 py-2">
-                  <span className="font-medium">{t.symbol}</span>
-                  <span className={t.result === "WIN" ? "text-bull" : "text-bear"}>
-                    {t.result === "WIN" ? "✅ 達標" : "🛑 停損"}
-                  </span>
-                  <span className="numeric-safe">{t.rMultiple.toFixed(2)}R</span>
-                </div>
-              ))}
-          </div>
-        </section>
-      )}
-
       {/* 即時訊號監控 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-1">🔴 即時訊號監控</div>
         <div className="text-xs text-subtext mb-2 leading-relaxed">
-          用跟2958筆回測完全相同的公式（觀察窗口={cbWindow}分鐘、TP=1R、回踩容忍度=±0.3%），檢查現在8個幣種各自處在哪個階段。只有🟢「A級進場訊號」代表現在符合完整條件，其他狀態都只是「正在觀察」，不是進場訊號。
+          用跟2958筆回測完全相同的公式（觀察窗口={cbWindow}分鐘、預設60分鐘、TP=1R、回踩容忍度=±0.3%），檢查現在8個幣種各自處在哪個階段。只有🟢「A級進場訊號」代表現在符合完整條件，其他狀態都只是「正在觀察」，不是進場訊號。
         </div>
         <div className="text-[11px] text-warn mb-3 leading-relaxed">
-          ⚠️ 這是LIVE SIGNAL ONLY，不會自動下單。開盤區間長度沿用上面「回踩策略完整分析」設定的觀察窗口，要跑過一次那邊的分析才會生效。
+          ⚠️ 這是LIVE SIGNAL ONLY，不會自動下單。可以直接按下面按鈕檢查，不需要先跑下面的完整分析。
         </div>
 
         <button
@@ -968,4 +879,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-      }
+              }
