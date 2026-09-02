@@ -144,3 +144,38 @@ export function auditSignalRecords(records: SignalRecord[]): PaperReport {
 
   return { sampleCount: n, winRate, expectancy, profitFactor, maxDrawdownR: maxDD };
 }
+
+// 策略驗證狀態（驗收 Part 15）。journal頁面每次跑完「一鍵執行完整分析」的樣本外驗證後，
+// 把結果存起來，首頁讀這裡顯示「策略驗證狀態」，不需要在首頁重新跑一次完整回測
+// （2年的5分鐘資料量太大，首頁載入時跑不起）。
+
+export interface OosSummary {
+  verdict: "PASSED" | "INSUFFICIENT" | "FAILED";
+  sampleCount: number;
+  winRate: number;
+  expectancy: number;
+  profitFactor: number;
+  maxDrawdownR: number;
+  windowMinutes: number;
+  tpMultiple: number;
+  computedAt: number;
+}
+
+const OOS_SUMMARY_KEY = "cts_oos_summary_v1";
+
+export function saveOosSummary(summary: OosSummary) {
+  try {
+    localStorage.setItem(OOS_SUMMARY_KEY, JSON.stringify(summary));
+  } catch {
+    // 忽略儲存失敗
+  }
+}
+
+export function loadOosSummary(): OosSummary | null {
+  try {
+    const raw = localStorage.getItem(OOS_SUMMARY_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
