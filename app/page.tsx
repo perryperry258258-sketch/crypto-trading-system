@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useMarketData } from "@/lib/useMarketData";
-import { lightStyle, regimeLabel } from "@/lib/labels";
 import { fetchKlines } from "@/lib/binance";
 import { evaluateLiveSignal, STATE_INFO, LiveSignal } from "@/lib/retestEngine";
 import { upsertFromLiveSignal, loadSignalRecords, loadOosSummary, OosSummary } from "@/lib/signalLog";
@@ -36,21 +35,42 @@ const OOS_VERDICT_INFO: Record<OosSummary["verdict"], { emoji: string; label: st
   FAILED: { emoji: "🔴", label: "未通過樣本外驗證" },
 };
 
+// 今日結論：完全依回踩引擎的即時狀態判斷，不再用舊Opportunity Score系統的燈號邏輯。
+function computeVerdict(
+  signals: LiveSignal[] | null,
+  loading: boolean
+): { label: string; headline: string; className: string } {
+  if (loading && !signals) {
+    return { label: "檢查中…", headline: "正在檢查8個幣種的即時訊號狀態。", className: "bg-panel border-border" };
+  }
+  if (!signals) {
+    return { label: "⚪ 尚未檢查", headline: "還沒有即時訊號資料。", className: "bg-panel border-border" };
+  }
+  const staleCount = signals.filter((s) => s.state === "DATA_STALE").length;
+  if (staleCount === signals.length) {
+    return {
+      label: "🔴 資料異常",
+      headline: "所有幣種的資料都延遲或異常，暫停訊號判斷，不要交易。",
+      className: "bg-bear/10 border-bear/30",
+    };
+  }
+  const active = signals.filter((s) => s.state === "RETEST_CONFIRMED");
+  if (active.length > 0) {
+    return {
+      label: "🟢 有A級機會",
+      headline: `${active.length}個幣種出現符合完整條件的回踩進場訊號，往下看詳細內容。`,
+      className: "bg-bull/10 border-bull/30",
+    };
+  }
+  return {
+    label: "⚪ 目前沒有機會",
+    headline: "目前沒有符合條件的交易，不交易，繼續觀察。",
+    className: "bg-panel border-border",
+  };
+}
+
 export default function Home() {
-  const {
-    capital,
-    capitalState,
-    btc,
-    eth,
-    regime,
-    daily,
-    dangerous,
-    errors,
-    loading,
-    reload,
-    lastUpdated,
-    connectionStatus,
-  } = useMarketData();
+  const { capital, capitalState, btc, eth, errors, loading, reload, lastUpdated, connectionStatus } = useMarketData();
 
   const [clock, setClock] = useState("");
   useEffect(() => {
@@ -108,7 +128,7 @@ export default function Home() {
   }, []);
 
   const activeSignals = engineSignals ? engineSignals.filter((s) => s.state === "RETEST_CONFIRMED") : [];
-  const staleCount = engineSignals ? engineSignals.filter((s) => s.state === "DATA_STALE").length : 0;
+  const verdict = computeVerdict(engineSignals, engineLoading);
 
   const handleEnableNotifications = async () => {
     const result = await requestNotificationPermission();
@@ -141,16 +161,16 @@ export default function Home() {
         </div>
       )}
 
-      {/* 1. 今日要不要交易 — 最優先 */}
-      <section className={`rounded-2xl border p-4 mb-3 ${lightStyle[daily.light].className}`}>
+      {/* 1. 今日要不要交易 — 最優先，由回踩引擎即時狀態決定 */}
+      <section className={`rounded-2xl border p-4 mb-3 ${verdict.className}`}>
         <div className="text-xs text-subtext mb-1">今日結論</div>
-        <div className="text-2xl font-display font-bold mb-1">{lightStyle[daily.light].label}</div>
-        <div className="text-sm leading-relaxed break-words">{daily.headline}</div>
+        <div className="text-2xl font-display font-bold mb-1">{verdict.label}</div>
+        <div className="text-sm leading-relaxed break-words">{verdict.headline}</div>
       </section>
 
-      {/* 2. 市場狀態 */}
+      {/* 2. BTC / ETH 即時價格 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-        <div className="text-xs text-subtext mb-2">今日市場・{regimeLabel[regime]}</div>
+        <div className="text-xs text-subtext mb-2">即時價格</div>
         <div className="grid grid-cols-2 gap-2">
           <div className="rounded-xl bg-panel2 p-3 min-w-0">
             <div className="text-xs text-subtext mb-0.5">BTC</div>
@@ -183,11 +203,6 @@ export default function Home() {
           <div className="text-xs text-subtext">🎯 A級機會</div>
           {engineLoading && <div className="text-[10px] text-subtext">檢查中…</div>}
         </div>
-        {staleCount > 0 && (
-          <div className="rounded-xl bg-bear/10 border border-bear/30 p-3 mb-3 text-xs text-bear">
-            🔴 {staleCount} 個幣種資料異常，暫停訊號判斷
-          </div>
-        )}
         {activeSignals.length > 0 ? (
           <div className="space-y-2">
             {activeSignals.map((s) => (
@@ -221,8 +236,8 @@ export default function Home() {
         ) : !engineLoading ? (
           <div className="text-sm text-subtext text-center py-3">目前沒有A級交易，不交易。</div>
         ) : null}
-        <Link href="/journal" className="btn-primary w-full border border-border bg-panel2 text-sm mt-3">
-          查看完整訊號監控
+        <Link href="/opportunities" className="btn-primary w-full border border-border bg-panel2 text-sm mt-3">
+          查看全部8個幣種狀態
         </Link>
       </section>
 
@@ -284,17 +299,7 @@ export default function Home() {
         )}
       </section>
 
-      {/* 4. 風險 */}
-      {dangerous.length > 0 && (
-        <section className="rounded-2xl border border-bear/40 bg-bear/10 p-4 mb-3">
-          <div className="text-xs text-bear mb-1">⚠️ 風險</div>
-          <div className="text-sm text-text break-words">
-            {dangerous.length} 檔標的波動或追高風險升高（{dangerous.map((d) => d.coin.symbol).join("、")}）
-          </div>
-        </section>
-      )}
-
-      {/* 5. 我的資金 */}
+      {/* 4. 我的資金 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-xs text-subtext mb-2">💰 我的資金</div>
         <div className="flex items-end justify-between mb-2">
@@ -311,13 +316,13 @@ export default function Home() {
         </div>
       </section>
 
-      {/* 6. 詳細資料 */}
+      {/* 5. 詳細資料 */}
       <div className="grid grid-cols-2 gap-3 mb-4">
         <Link href="/market" className="btn-primary border border-border bg-panel text-sm">
-          市場詳細分析
+          市場與訊號紀錄
         </Link>
         <Link href="/opportunities" className="btn-primary border border-border bg-panel text-sm">
-          全部交易機會
+          全部即時狀態
         </Link>
       </div>
 
