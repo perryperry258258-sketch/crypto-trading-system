@@ -22,7 +22,14 @@ import {
   RetestStrategyReport,
 } from "@/lib/retestStrategyLab";
 import { evaluateLiveSignal, STATE_INFO, LiveSignal } from "@/lib/retestEngine";
-import { upsertFromLiveSignal, loadSignalRecords, auditSignalRecords, SignalRecord, PaperReport } from "@/lib/signalLog";
+import {
+  upsertFromLiveSignal,
+  loadSignalRecords,
+  auditSignalRecords,
+  saveOosSummary,
+  SignalRecord,
+  PaperReport,
+} from "@/lib/signalLog";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -486,6 +493,27 @@ export default function JournalPage() {
     setCbCandles(candlesBySymbol);
     setCbEvents(events);
     setCbTrades(trades);
+
+    // 存一份摘要給首頁讀，首頁不會自己重跑一次2年回測（跑不動），只讀這裡最後一次算出來的結果。
+    if (trades.length > 0) {
+      const split = splitTrainValOOS(trades);
+      const tr = auditRetestStrategy(split.train, "train");
+      const va = auditRetestStrategy(split.validation, "val");
+      const oo = auditRetestStrategy(split.oos, "oos");
+      const verdict: "PASSED" | "INSUFFICIENT" | "FAILED" =
+        oo.tradeCount < 30 ? "INSUFFICIENT" : tr.expectancy > 0 && va.expectancy > 0 && oo.expectancy > 0 ? "PASSED" : "FAILED";
+      saveOosSummary({
+        verdict,
+        sampleCount: oo.tradeCount,
+        winRate: oo.winRate,
+        expectancy: oo.expectancy,
+        profitFactor: oo.profitFactor,
+        maxDrawdownR: oo.maxDrawdownR,
+        windowMinutes: cbWindow,
+        tpMultiple: OOS_TP,
+        computedAt: Date.now(),
+      });
+    }
   };
 
   const vbOverall = cbEvents ? auditVolumeBreakout(cbEvents, "全部事件") : null;
@@ -940,4 +968,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-        }
+      }
