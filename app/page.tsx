@@ -83,48 +83,50 @@ export default function Home() {
   const status = statusBadge[connectionStatus];
 
   // 回踩策略即時訊號（Part 14）：跟「交易」頁的即時訊號監控用完全相同的引擎（retestEngine.ts），
-  // 首頁進來時自動檢查一次，不用手動按按鈕。
+  // 首頁進來時自動檢查一次，不用手動按按鈕；按「更新」也會重新檢查一次（之前只重抓大盤資料，
+  // 沒有重新檢查即時訊號，導致使用者感覺按了沒反應，這裡修正）。
   const [engineSignals, setEngineSignals] = useState<LiveSignal[] | null>(null);
   const [engineLoading, setEngineLoading] = useState(false);
   const [oosSummary, setOosSummary] = useState<OosSummary | null>(null);
   const [notifPermission, setNotifPermission] = useState<NotificationPermissionStatus>("default");
 
+  const checkEngine = async () => {
+    setEngineLoading(true);
+    const beforeRecords = loadSignalRecords();
+    const beforeOpenIds = new Set(beforeRecords.filter((r) => r.status === "OPEN").map((r) => r.id));
+
+    const results: LiveSignal[] = [];
+    for (const symbol of AUDIT_SYMBOLS) {
+      try {
+        const candles = await fetchKlines(symbol, "5m", 288);
+        const signal = evaluateLiveSignal(symbol, candles, ENGINE_WINDOW, ENGINE_TP, 0.3);
+        results.push(signal);
+        upsertFromLiveSignal(signal, ENGINE_TP);
+      } catch {
+        // 這個幣種這次抓取失敗，跳過，不假造資料
+      }
+    }
+    setEngineLoading(false);
+    setEngineSignals(results);
+
+    // Part 11 推播：只在「第一次」看到某個訊號進入 RETEST_CONFIRMED 時通知一次，
+    // 不會每次刷新都重複通知同一個訊號。
+    const afterRecords = loadSignalRecords();
+    const newlyOpen = afterRecords.filter((r) => r.status === "OPEN" && !beforeOpenIds.has(r.id));
+    newlyOpen.forEach((r) => {
+      showNotification(
+        `🟢 A級進場訊號：${r.symbol.replace("USDT", "")} ${r.direction === "LONG" ? "做多" : "做空"}`,
+        `進場 ${r.entryPrice.toPrecision(6)} ・ SL ${r.stopLoss.toPrecision(6)} ・ TP ${r.takeProfit.toPrecision(6)}`,
+        r.id
+      );
+    });
+  };
+
   useEffect(() => {
     setOosSummary(loadOosSummary());
     setNotifPermission(getNotificationPermission());
-
-    const checkEngine = async () => {
-      setEngineLoading(true);
-      const beforeRecords = loadSignalRecords();
-      const beforeOpenIds = new Set(beforeRecords.filter((r) => r.status === "OPEN").map((r) => r.id));
-
-      const results: LiveSignal[] = [];
-      for (const symbol of AUDIT_SYMBOLS) {
-        try {
-          const candles = await fetchKlines(symbol, "5m", 288);
-          const signal = evaluateLiveSignal(symbol, candles, ENGINE_WINDOW, ENGINE_TP, 0.3);
-          results.push(signal);
-          upsertFromLiveSignal(signal, ENGINE_TP);
-        } catch {
-          // 這個幣種這次抓取失敗，跳過，不假造資料
-        }
-      }
-      setEngineLoading(false);
-      setEngineSignals(results);
-
-      // Part 11 推播：只在「第一次」看到某個訊號進入 RETEST_CONFIRMED 時通知一次，
-      // 不會每次刷新都重複通知同一個訊號。
-      const afterRecords = loadSignalRecords();
-      const newlyOpen = afterRecords.filter((r) => r.status === "OPEN" && !beforeOpenIds.has(r.id));
-      newlyOpen.forEach((r) => {
-        showNotification(
-          `🟢 A級進場訊號：${r.symbol.replace("USDT", "")} ${r.direction === "LONG" ? "做多" : "做空"}`,
-          `進場 ${r.entryPrice.toPrecision(6)} ・ SL ${r.stopLoss.toPrecision(6)} ・ TP ${r.takeProfit.toPrecision(6)}`,
-          r.id
-        );
-      });
-    };
     checkEngine();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const activeSignals = engineSignals ? engineSignals.filter((s) => s.state === "RETEST_CONFIRMED") : [];
@@ -135,15 +137,21 @@ export default function Home() {
     setNotifPermission(result);
   };
 
+  const handleRefresh = () => {
+    reload();
+    checkEngine();
+    setOosSummary(loadOosSummary());
+  };
+
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
       <header className="mb-1 flex items-center justify-between">
         <h1 className="text-xl font-display font-bold tracking-tight">首頁</h1>
         <button
-          onClick={reload}
+          onClick={handleRefresh}
           className="btn-primary px-3 text-xs text-subtext border border-border active:scale-95 transition"
         >
-          {loading ? "更新中" : "🔄 更新"}
+          {loading || engineLoading ? "更新中" : "🔄 更新"}
         </button>
       </header>
       <div className={`text-xs mb-4 ${status.className}`}>
@@ -332,4 +340,4 @@ export default function Home() {
       </footer>
     </main>
   );
-}
+                  }
