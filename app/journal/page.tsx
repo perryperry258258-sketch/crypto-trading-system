@@ -22,7 +22,7 @@ import {
   RetestStrategyReport,
 } from "@/lib/retestStrategyLab";
 import { evaluateLiveSignal, STATE_INFO, LiveSignal } from "@/lib/retestEngine";
-import { logSignal, loadSignalLog, SignalLogEntry } from "@/lib/signalLog";
+import { upsertFromLiveSignal, loadSignalRecords, auditSignalRecords, SignalRecord, PaperReport } from "@/lib/signalLog";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -246,6 +246,35 @@ function OosVerdict(train: RetestStrategyReport, val: RetestStrategyReport, oos:
   };
 }
 
+function EngineStatusBanner({ signals }: { signals: LiveSignal[] }) {
+  const staleCount = signals.filter((s) => s.state === "DATA_STALE").length;
+  const activeCount = signals.filter((s) => s.state === "RETEST_CONFIRMED").length;
+  if (staleCount > 0) {
+    return (
+      <div className="rounded-xl bg-bear/10 border border-bear/30 p-3 mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">🔴</span>
+          <span className="text-sm font-semibold">市場資料異常，暫停訊號判斷</span>
+        </div>
+        <div className="text-[11px] text-subtext mt-1">
+          {staleCount} 個幣種的資料延遲超過15分鐘，這些幣種目前不會產生A級訊號，等資料恢復正常再重新檢查。
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl bg-panel2 p-3 mb-3">
+      <div className="flex items-center gap-2">
+        <span className="text-lg">🟢</span>
+        <span className="text-sm font-semibold">資料正常</span>
+      </div>
+      <div className="text-[11px] text-subtext mt-1">
+        {activeCount > 0 ? `${activeCount} 個A級訊號` : "目前沒有A級訊號"} ・ 8個幣種資料都在15分鐘內
+      </div>
+    </div>
+  );
+}
+
 function LiveSignalRow({ s }: { s: LiveSignal }) {
   const info = STATE_INFO[s.state];
   return (
@@ -256,6 +285,49 @@ function LiveSignalRow({ s }: { s: LiveSignal }) {
       </span>
       <span className="text-subtext">{s.direction ?? "—"}</span>
       <span className="numeric-safe">{s.currentPrice != null ? s.currentPrice.toPrecision(6) : "—"}</span>
+    </div>
+  );
+}
+
+function LiveSignalDebugCard({ s }: { s: LiveSignal }) {
+  const info = STATE_INFO[s.state];
+  return (
+    <div className="rounded-xl bg-panel2 p-3 mb-2">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold">{s.symbol.replace("USDT", "")}</span>
+        <span className="text-[11px]">
+          {info.emoji} {info.label}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+        <div>
+          <span className="text-subtext">方向：</span>
+          {s.direction ?? "—"}
+        </div>
+        <div>
+          <span className="text-subtext">現價：</span>
+          <span className="numeric-safe">{s.currentPrice?.toPrecision(6) ?? "—"}</span>
+        </div>
+        <div>
+          <span className="text-subtext">Ref High：</span>
+          <span className="numeric-safe">{s.refHigh?.toPrecision(6) ?? "—"}</span>
+        </div>
+        <div>
+          <span className="text-subtext">Ref Low：</span>
+          <span className="numeric-safe">{s.refLow?.toPrecision(6) ?? "—"}</span>
+        </div>
+        <div>
+          <span className="text-subtext">距突破：</span>
+          {s.distanceToBreakoutPct != null ? `${s.distanceToBreakoutPct.toFixed(2)}%` : "—"}
+        </div>
+        <div>
+          <span className="text-subtext">資料延遲：</span>
+          {s.dataAgeMinutes != null ? `${s.dataAgeMinutes.toFixed(1)}分` : "—"}
+        </div>
+      </div>
+      <div className="text-[10px] text-subtext mt-1">
+        更新於 {new Date(s.updatedAt).toLocaleTimeString("zh-TW")}
+      </div>
     </div>
   );
 }
@@ -295,6 +367,63 @@ function LiveSignalDetailCard({ s }: { s: LiveSignal }) {
   );
 }
 
+function PaperComparisonCard({ backtest, paper }: { backtest: RetestStrategyReport; paper: PaperReport }) {
+  return (
+    <div className="rounded-xl bg-panel2 p-3 mb-3">
+      <div className="text-xs font-semibold mb-2">回測 vs Paper Trading（TP=1R）</div>
+      <table className="w-full text-[11px] border-collapse">
+        <thead>
+          <tr>
+            <th className="text-left text-subtext font-normal px-1 py-1"></th>
+            <th className="text-right text-subtext font-normal px-1 py-1">回測(樣本外)</th>
+            <th className="text-right text-subtext font-normal px-1 py-1">Paper</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr className="border-t border-border">
+            <td className="text-subtext px-1 py-1.5">樣本數</td>
+            <td className="text-right numeric-safe px-1 py-1.5">{backtest.tradeCount}</td>
+            <td className="text-right numeric-safe px-1 py-1.5">{paper.sampleCount}</td>
+          </tr>
+          <tr className="border-t border-border">
+            <td className="text-subtext px-1 py-1.5">勝率</td>
+            <td className="text-right numeric-safe px-1 py-1.5">{backtest.winRate.toFixed(1)}%</td>
+            <td className="text-right numeric-safe px-1 py-1.5">{paper.winRate.toFixed(1)}%</td>
+          </tr>
+          <tr className="border-t border-border">
+            <td className="text-subtext px-1 py-1.5">期望值</td>
+            <td className="text-right numeric-safe px-1 py-1.5">
+              {backtest.expectancy >= 0 ? "+" : ""}
+              {backtest.expectancy.toFixed(2)}R
+            </td>
+            <td className="text-right numeric-safe px-1 py-1.5">
+              {paper.expectancy >= 0 ? "+" : ""}
+              {paper.expectancy.toFixed(2)}R
+            </td>
+          </tr>
+          <tr className="border-t border-border">
+            <td className="text-subtext px-1 py-1.5">獲利因子</td>
+            <td className="text-right numeric-safe px-1 py-1.5">
+              {backtest.profitFactor === Infinity ? "∞" : backtest.profitFactor.toFixed(2)}
+            </td>
+            <td className="text-right numeric-safe px-1 py-1.5">
+              {paper.profitFactor === Infinity ? "∞" : paper.profitFactor.toFixed(2)}
+            </td>
+          </tr>
+          <tr className="border-t border-border">
+            <td className="text-subtext px-1 py-1.5">最大回撤</td>
+            <td className="text-right numeric-safe px-1 py-1.5">-{backtest.maxDrawdownR.toFixed(2)}R</td>
+            <td className="text-right numeric-safe px-1 py-1.5">-{paper.maxDrawdownR.toFixed(2)}R</td>
+          </tr>
+        </tbody>
+      </table>
+      <div className="text-[10px] text-subtext mt-2 leading-relaxed">
+        Paper樣本數還很少時（少於30筆）這個比較沒有統計意義，只是先把數字擺在一起，隨著時間累積才會有參考價值。Paper的期望值沒有扣手續費/滑價，會比回測系統性地好看一點點。
+      </div>
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
 
@@ -317,7 +446,7 @@ export default function JournalPage() {
   const [liveLoading, setLiveLoading] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [liveLastUpdate, setLiveLastUpdate] = useState<number | null>(null);
-  const [signalLogEntries, setSignalLogEntries] = useState<SignalLogEntry[]>([]);
+  const [signalRecords, setSignalRecords] = useState<SignalRecord[]>([]);
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
@@ -407,7 +536,8 @@ export default function JournalPage() {
   };
 
   // 即時訊號監控：用固定的、已驗證過的公式（觀察窗口=cbWindow、TP=1R、回踩容忍度=0.3%），
-  // 抓每個幣種最近一天的5分鐘K線，評估現在處在哪個狀態。跟回測用完全相同的偵測邏輯。
+  // 抓每個幣種最近一天的5分鐘K線，評估現在處在哪個狀態。跟回測用完全相同的偵測邏輯
+  // （驗收第1項：兩邊都呼叫 lib/retestCore.ts 的 detectFromOpen）。
   const runLiveSignalCheck = async () => {
     setLiveLoading(true);
     setLiveError(null);
@@ -416,24 +546,12 @@ export default function JournalPage() {
     for (const symbol of AUDIT_SYMBOLS) {
       try {
         const candles = await fetchKlines(symbol, "5m", 288);
-        if (candles.length > 0) {
-          successCount++;
-          const signal = evaluateLiveSignal(symbol, candles, cbWindow, OOS_TP, 0.3);
-          results.push(signal);
-          if (signal.state === "RETEST_CONFIRMED" && signal.direction && signal.entryPrice && signal.stopLoss && signal.takeProfit && signal.riskDistance && signal.signalTime) {
-            logSignal({
-              symbol,
-              direction: signal.direction,
-              entryPrice: signal.entryPrice,
-              stopLoss: signal.stopLoss,
-              takeProfit: signal.takeProfit,
-              riskDistance: signal.riskDistance,
-              signalTime: signal.signalTime,
-            });
-          }
-        }
+        successCount++;
+        const signal = evaluateLiveSignal(symbol, candles, cbWindow, OOS_TP, 0.3);
+        results.push(signal);
+        upsertFromLiveSignal(signal, OOS_TP);
       } catch {
-        // 跳過失敗的幣種
+        // 抓取失敗：這個幣種這次不評估，不假造資料
       }
     }
     setLiveLoading(false);
@@ -443,10 +561,11 @@ export default function JournalPage() {
     }
     setLiveSignals(results);
     setLiveLastUpdate(Date.now());
-    setSignalLogEntries(loadSignalLog());
+    setSignalRecords(loadSignalRecords());
   };
 
   const activeSignals = liveSignals ? liveSignals.filter((s) => s.state === "RETEST_CONFIRMED") : [];
+  const paperReport = signalRecords.length ? auditSignalRecords(signalRecords) : null;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -575,6 +694,8 @@ export default function JournalPage() {
 
         {liveSignals && (
           <div>
+            <EngineStatusBanner signals={liveSignals} />
+
             {activeSignals.length > 0 ? (
               <div>
                 <div className="text-xs font-semibold mb-2 text-bull">
@@ -590,32 +711,58 @@ export default function JournalPage() {
               </div>
             )}
 
+            {paperReport && (
+              <PaperComparisonCard
+                backtest={
+                  oosReport ?? {
+                    label: "",
+                    tradeCount: 0,
+                    winRate: 0,
+                    completedTrades: 0,
+                    expectancy: 0,
+                    profitFactor: 0,
+                    maxDrawdownR: 0,
+                    maxConsecutiveLosses: 0,
+                  }
+                }
+                paper={paperReport}
+              />
+            )}
+
             <details className="mb-1">
               <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
-                全部8個幣種目前狀態 ▾
+                Debug Mode：8個幣種完整狀態 ▾
               </summary>
-              <div className="space-y-1.5">
+              <div>
                 {liveSignals.map((s) => (
-                  <LiveSignalRow key={s.symbol} s={s} />
+                  <LiveSignalDebugCard key={s.symbol} s={s} />
                 ))}
               </div>
             </details>
 
-            {signalLogEntries.length > 0 && (
+            {signalRecords.length > 0 && (
               <details className="mt-3 mb-1">
                 <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
-                  歷史訊號紀錄（本機儲存，共{signalLogEntries.length}筆）▾
+                  Signal Record（本機儲存，共{signalRecords.length}筆）▾
                 </summary>
                 <div className="space-y-1.5">
-                  {[...signalLogEntries]
+                  {[...signalRecords]
                     .reverse()
                     .slice(0, 20)
-                    .map((e) => (
-                      <div key={e.id} className="flex items-center justify-between text-xs rounded-lg bg-panel px-3 py-2">
-                        <span className="font-medium w-16 shrink-0">{e.symbol.replace("USDT", "")}</span>
-                        <span className="text-subtext">{e.direction}</span>
-                        <span className="numeric-safe">{e.entryPrice.toPrecision(6)}</span>
-                        <span className="text-subtext">{new Date(e.signalTime * 1000).toLocaleDateString("zh-TW")}</span>
+                    .map((r) => (
+                      <div key={r.id} className="flex items-center justify-between text-xs rounded-lg bg-panel px-3 py-2">
+                        <span className="font-medium w-14 shrink-0">{r.symbol.replace("USDT", "")}</span>
+                        <span
+                          className={
+                            r.status === "WIN" ? "text-bull" : r.status === "LOSS" ? "text-bear" : "text-subtext"
+                          }
+                        >
+                          {r.status}
+                        </span>
+                        <span className="numeric-safe">
+                          {r.rMultiple != null ? `${r.rMultiple >= 0 ? "+" : ""}${r.rMultiple.toFixed(2)}R` : "—"}
+                        </span>
+                        <span className="text-subtext">{new Date(r.refTime * 1000).toLocaleDateString("zh-TW")}</span>
                       </div>
                     ))}
                 </div>
@@ -793,4 +940,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-  }
+        }
