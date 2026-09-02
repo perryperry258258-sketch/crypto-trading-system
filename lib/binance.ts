@@ -1,6 +1,11 @@
-// 免費、無需 API Key 的 Binance 公開資料來源。
+// Binance USDT-M 永續合約（Futures）公開資料來源，免費、無需 API Key。
 // WebSocket 連線是在使用者的瀏覽器裡建立的（打開網站才連線，關閉就斷開），
 // 不需要任何常駐後端伺服器，完全免費。
+//
+// 【資料源紀錄】原本用現貨（Spot）API，使用者實際看盤/交易的是永續合約，
+// 兩者價格會因資金費率、多空力道出現價差，已經改成合約API，讓回測/即時訊號
+// 跟使用者實際看到的價格一致。合約K線/ticker的欄位格式跟現貨完全相同，
+// 只有網址(REST_BASE/WS_BASE)不同，程式邏輯不用改。
 
 export interface BinanceTicker {
   symbol: string; // e.g. BTCUSDT
@@ -35,8 +40,8 @@ export const WATCHLIST_PAIRS = [
   "LINKUSDT",
 ];
 
-const REST_BASE = "https://api.binance.com/api/v3";
-const WS_BASE = "wss://stream.binance.com:9443/stream";
+const REST_BASE = "https://fapi.binance.com/fapi/v1";
+const WS_BASE = "wss://fstream.binance.com/stream";
 
 export class DataSourceError extends Error {
   constructor(public source: string, message: string) {
@@ -47,13 +52,17 @@ export class DataSourceError extends Error {
 
 // 初始化用：REST 一次抓全部監控幣種的 24hr ticker
 export async function fetchTickersRest(symbols: string[] = WATCHLIST_PAIRS): Promise<Record<string, BinanceTicker>> {
-  const url = `${REST_BASE}/ticker/24hr?symbols=${encodeURIComponent(JSON.stringify(symbols))}`;
+  // 合約(Futures) API 的 /ticker/24hr 不支援現貨那種 symbols= 批次查詢參數，
+  // 只能整批抓全部合約的ticker再自己過濾，跟原本 fetchTopVolumePairs 的做法一致。
+  const url = `${REST_BASE}/ticker/24hr`;
   try {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    const wanted = new Set(symbols);
     const out: Record<string, BinanceTicker> = {};
     (data as any[]).forEach((t) => {
+      if (!wanted.has(t.symbol)) return;
       out[t.symbol] = {
         symbol: t.symbol,
         price: Number(t.lastPrice),
