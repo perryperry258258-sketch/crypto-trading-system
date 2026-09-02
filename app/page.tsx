@@ -4,6 +4,15 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useMarketData } from "@/lib/useMarketData";
 import { lightStyle, regimeLabel } from "@/lib/labels";
+import { fetchKlines } from "@/lib/binance";
+import { evaluateLiveSignal, STATE_INFO, LiveSignal } from "@/lib/retestEngine";
+import { upsertFromLiveSignal, loadSignalRecords, loadOosSummary, OosSummary } from "@/lib/signalLog";
+import {
+  getNotificationPermission,
+  requestNotificationPermission,
+  showNotification,
+  NotificationPermissionStatus,
+} from "@/lib/notifications";
 
 function fmt(n: number) {
   if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -17,6 +26,16 @@ const statusBadge: Record<string, { label: string; className: string }> = {
   ERROR: { label: "🔴 資料異常（Data Error）", className: "text-bear" },
 };
 
+const AUDIT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT"];
+const ENGINE_WINDOW = 60; // 沿用「交易」頁一鍵分析預設的觀察窗口
+const ENGINE_TP = 1; // 暫定正式版本 TP=1R
+
+const OOS_VERDICT_INFO: Record<OosSummary["verdict"], { emoji: string; label: string }> = {
+  PASSED: { emoji: "🟢", label: "已通過樣本外驗證" },
+  INSUFFICIENT: { emoji: "🟡", label: "樣本不足" },
+  FAILED: { emoji: "🔴", label: "未通過樣本外驗證" },
+};
+
 export default function Home() {
   const {
     capital,
@@ -25,7 +44,6 @@ export default function Home() {
     eth,
     regime,
     daily,
-    top3,
     dangerous,
     errors,
     loading,
@@ -42,8 +60,60 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  const bestOpp = top3[0];
   const status = statusBadge[connectionStatus];
+
+  // 回踩策略即時訊號（Part 14）：跟「交易」頁的即時訊號監控用完全相同的引擎（retestEngine.ts），
+  // 首頁進來時自動檢查一次，不用手動按按鈕。
+  const [engineSignals, setEngineSignals] = useState<LiveSignal[] | null>(null);
+  const [engineLoading, setEngineLoading] = useState(false);
+  const [oosSummary, setOosSummary] = useState<OosSummary | null>(null);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermissionStatus>("default");
+
+  useEffect(() => {
+    setOosSummary(loadOosSummary());
+    setNotifPermission(getNotificationPermission());
+
+    const checkEngine = async () => {
+      setEngineLoading(true);
+      const beforeRecords = loadSignalRecords();
+      const beforeOpenIds = new Set(beforeRecords.filter((r) => r.status === "OPEN").map((r) => r.id));
+
+      const results: LiveSignal[] = [];
+      for (const symbol of AUDIT_SYMBOLS) {
+        try {
+          const candles = await fetchKlines(symbol, "5m", 288);
+          const signal = evaluateLiveSignal(symbol, candles, ENGINE_WINDOW, ENGINE_TP, 0.3);
+          results.push(signal);
+          upsertFromLiveSignal(signal, ENGINE_TP);
+        } catch {
+          // 這個幣種這次抓取失敗，跳過，不假造資料
+        }
+      }
+      setEngineLoading(false);
+      setEngineSignals(results);
+
+      // Part 11 推播：只在「第一次」看到某個訊號進入 RETEST_CONFIRMED 時通知一次，
+      // 不會每次刷新都重複通知同一個訊號。
+      const afterRecords = loadSignalRecords();
+      const newlyOpen = afterRecords.filter((r) => r.status === "OPEN" && !beforeOpenIds.has(r.id));
+      newlyOpen.forEach((r) => {
+        showNotification(
+          `🟢 A級進場訊號：${r.symbol.replace("USDT", "")} ${r.direction === "LONG" ? "做多" : "做空"}`,
+          `進場 ${r.entryPrice.toPrecision(6)} ・ SL ${r.stopLoss.toPrecision(6)} ・ TP ${r.takeProfit.toPrecision(6)}`,
+          r.id
+        );
+      });
+    };
+    checkEngine();
+  }, []);
+
+  const activeSignals = engineSignals ? engineSignals.filter((s) => s.state === "RETEST_CONFIRMED") : [];
+  const staleCount = engineSignals ? engineSignals.filter((s) => s.state === "DATA_STALE").length : 0;
+
+  const handleEnableNotifications = async () => {
+    const result = await requestNotificationPermission();
+    setNotifPermission(result);
+  };
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -107,42 +177,110 @@ export default function Home() {
         </div>
       </section>
 
-      {/* 3. 高品質機會 */}
+      {/* 3. A級機會（回踩策略即時訊號，Part 14） */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
-        <div className="text-xs text-subtext mb-2">🔥 今日機會</div>
-        {bestOpp ? (
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs text-subtext">🎯 A級機會</div>
+          {engineLoading && <div className="text-[10px] text-subtext">檢查中…</div>}
+        </div>
+        {staleCount > 0 && (
+          <div className="rounded-xl bg-bear/10 border border-bear/30 p-3 mb-3 text-xs text-bear">
+            🔴 {staleCount} 個幣種資料異常，暫停訊號判斷
+          </div>
+        )}
+        {activeSignals.length > 0 ? (
+          <div className="space-y-2">
+            {activeSignals.map((s) => (
+              <div key={s.symbol} className="rounded-xl bg-bull/10 border border-bull/30 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-lg font-display font-bold">
+                    {s.symbol.replace("USDT", "")} {s.direction === "LONG" ? "做多" : "做空"}
+                  </span>
+                  <span className="text-sm font-semibold text-bull">現在可以進場</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                  <div>
+                    <div className="text-subtext">Entry</div>
+                    <div className="font-semibold numeric-safe">{s.entryPrice?.toPrecision(6)}</div>
+                  </div>
+                  <div>
+                    <div className="text-subtext">SL</div>
+                    <div className="font-semibold numeric-safe text-bear">{s.stopLoss?.toPrecision(6)}</div>
+                  </div>
+                  <div>
+                    <div className="text-subtext">TP（1R）</div>
+                    <div className="font-semibold numeric-safe text-bull">{s.takeProfit?.toPrecision(6)}</div>
+                  </div>
+                </div>
+                <div className="text-[10px] text-subtext mt-2">
+                  訊號時間：{s.signalTime ? new Date(s.signalTime * 1000).toLocaleString("zh-TW") : "—"}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : !engineLoading ? (
+          <div className="text-sm text-subtext text-center py-3">目前沒有A級交易，不交易。</div>
+        ) : null}
+        <Link href="/journal" className="btn-primary w-full border border-border bg-panel2 text-sm mt-3">
+          查看完整訊號監控
+        </Link>
+      </section>
+
+      {/* 3b. 策略驗證狀態（Part 15） */}
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-xs text-subtext mb-2">策略驗證狀態</div>
+        {oosSummary ? (
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-lg font-display font-bold">{bestOpp.coin.symbol}</span>
-              <span className="text-sm font-semibold text-accent">{bestOpp.opportunityScore.toFixed(0)}/100</span>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-lg">{OOS_VERDICT_INFO[oosSummary.verdict].emoji}</span>
+              <span className="text-sm font-semibold">{OOS_VERDICT_INFO[oosSummary.verdict].label}</span>
             </div>
-            <div className="grid grid-cols-3 gap-2 text-center mb-3">
+            <div className="grid grid-cols-3 gap-2 text-center text-xs">
               <div>
-                <div className="text-xs text-subtext">上行</div>
-                <div className="text-sm font-semibold text-bull numeric-safe">
-                  +{(((bestOpp.tp1 - bestOpp.coin.price) / bestOpp.coin.price) * 100).toFixed(0)}%
+                <div className="text-subtext">OOS樣本數</div>
+                <div className="font-semibold numeric-safe">{oosSummary.sampleCount}</div>
+              </div>
+              <div>
+                <div className="text-subtext">OOS勝率</div>
+                <div className="font-semibold numeric-safe">{oosSummary.winRate.toFixed(1)}%</div>
+              </div>
+              <div>
+                <div className="text-subtext">OOS期望值</div>
+                <div className={`font-semibold numeric-safe ${oosSummary.expectancy >= 0 ? "text-bull" : "text-bear"}`}>
+                  {oosSummary.expectancy >= 0 ? "+" : ""}
+                  {oosSummary.expectancy.toFixed(2)}R
                 </div>
               </div>
               <div>
-                <div className="text-xs text-subtext">停損</div>
-                <div className="text-sm font-semibold text-bear numeric-safe">
-                  -{(((bestOpp.coin.price - bestOpp.stopLoss) / bestOpp.coin.price) * 100).toFixed(0)}%
+                <div className="text-subtext">OOS PF</div>
+                <div className="font-semibold numeric-safe">
+                  {oosSummary.profitFactor === Infinity ? "∞" : oosSummary.profitFactor.toFixed(2)}
                 </div>
               </div>
               <div>
-                <div className="text-xs text-subtext">R:R</div>
-                <div className="text-sm font-semibold numeric-safe">{bestOpp.riskRewardRatio.toFixed(1)}</div>
+                <div className="text-subtext">OOS最大回撤</div>
+                <div className="font-semibold numeric-safe text-bear">-{oosSummary.maxDrawdownR.toFixed(2)}R</div>
+              </div>
+              <div>
+                <div className="text-subtext">驗證時間</div>
+                <div className="font-semibold text-[10px] pt-1">
+                  {new Date(oosSummary.computedAt).toLocaleDateString("zh-TW")}
+                </div>
               </div>
             </div>
-            <Link
-              href="/opportunities"
-              className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm"
-            >
-              查看交易計畫
-            </Link>
           </div>
         ) : (
-          <div className="text-sm text-subtext text-center py-3">💤 目前沒有足夠高品質的交易機會</div>
+          <div className="text-xs text-subtext">
+            🔴 尚未驗證——去「交易」頁跑一次「一鍵執行完整分析」才會有樣本外驗證結果。
+          </div>
+        )}
+        {notifPermission !== "granted" && notifPermission !== "unsupported" && (
+          <button
+            onClick={handleEnableNotifications}
+            className="btn-primary w-full border border-border bg-panel2 text-xs mt-3"
+          >
+            🔔 開啟A級訊號推播通知
+          </button>
         )}
       </section>
 
