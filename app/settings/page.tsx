@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useMarketData } from "@/lib/useMarketData";
 import { PHASES, calcPositionSize } from "@/lib/phases";
+import { getNotificationPermission, requestNotificationPermission, NotificationPermissionStatus } from "@/lib/notifications";
 
 const wsStatusLabel: Record<string, { label: string; className: string }> = {
   LIVE: { label: "🟢 即時連線中", className: "text-bull" },
@@ -15,20 +16,8 @@ const RATE_KEY = "cts_usdtwd_v1";
 const DEFAULT_RATE = 31.5;
 
 export default function SettingsPage() {
-  const {
-    capital,
-    setCapital,
-    capitalState,
-    connectionStatus,
-    lastTickAt,
-    lastUpdated,
-    scanUpdatedAt,
-    coins,
-    candidates,
-    global,
-    notificationPermission,
-    requestNotifications,
-  } = useMarketData();
+  const { capital, setCapital, capitalState, connectionStatus, lastTickAt, lastUpdated, coins, global } =
+    useMarketData();
   const [input, setInput] = useState(String(capital));
   const [now, setNow] = useState(Date.now());
   const [calcEntry, setCalcEntry] = useState("");
@@ -36,11 +25,18 @@ export default function SettingsPage() {
   const [calcRisk, setCalcRisk] = useState(String(capitalState.phase.maxRiskPct.toFixed(2)));
   const [usdRate, setUsdRate] = useState(DEFAULT_RATE);
   const [usdRateInput, setUsdRateInput] = useState(String(DEFAULT_RATE));
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionStatus>("default");
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
+    setNotificationPermission(getNotificationPermission());
     return () => clearInterval(id);
   }, []);
+
+  const requestNotifications = async () => {
+    const result = await requestNotificationPermission();
+    setNotificationPermission(result);
+  };
 
   useEffect(() => {
     const saved = Number(localStorage.getItem(RATE_KEY));
@@ -62,7 +58,7 @@ export default function SettingsPage() {
   const ws = wsStatusLabel[connectionStatus];
   const restOk = coins.length > 0;
   const coingeckoOk = global !== null;
-  const chartOk = candidates.length > 0 || coins.length > 0; // 圖表與 dashboard 共用同一個 Binance K線來源
+  const chartOk = coins.length > 0;
 
   const capitalUsd = capital / usdRate;
   const entryNum = Number(calcEntry);
@@ -111,17 +107,13 @@ export default function SettingsPage() {
             <span className="text-subtext">CoinGecko 最後更新</span>
             <span className="numeric-safe">{lastUpdated ? lastUpdated.toLocaleTimeString() : "—"}</span>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-subtext">技術指標最後掃描</span>
-            <span className="numeric-safe">{scanUpdatedAt ? scanUpdatedAt.toLocaleTimeString() : "—"}</span>
-          </div>
         </div>
       </section>
 
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
         <div className="text-sm font-semibold mb-2">🔔 瀏覽器通知</div>
         <div className="text-xs text-subtext mb-3 leading-relaxed">
-          出現 S/A 級機會、模擬交易平倉時會跳通知。限制：只有這個網站分頁還開著（可在背景）才會運作，完全關閉分頁不會收到。
+          回踩引擎出現A級進場訊號時會跳通知。限制：只有這個網站分頁還開著（可在背景）才會運作，完全關閉分頁不會收到。
         </div>
         {notificationPermission === "granted" && <div className="text-sm text-bull">🟢 已啟用</div>}
         {notificationPermission === "denied" && (
