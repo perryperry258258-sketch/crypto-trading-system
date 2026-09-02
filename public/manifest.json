@@ -1,11 +1,11 @@
 {
-  "name": "交易決策系統",
-  "short_name": "交易系統",
-  "description": "加密貨幣資金階段交易決策儀表板（僅供決策參考，非投資建議，不保證獲利）",
+  "name": "A Signal",
+  "short_name": "A Signal",
+  "description": "只在真正符合條件時告訴我——回踩策略即時訊號系統（僅供決策參考，非投資建議，不保證獲利）",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0B0E11",
-  "theme_color": "#0B0E11",
+  "background_color": "#0A0E14",
+  "theme_color": "#0A0E14",
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
