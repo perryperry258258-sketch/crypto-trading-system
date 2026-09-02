@@ -1,10 +1,8 @@
-// 核心資料型別定義
-
-export type MarketRegime = "BULL" | "SIDEWAYS" | "BEAR" | "EUPHORIA" | "PANIC";
-
-export type TradeLight = "GO" | "CAUTION" | "NO_TRADE"; // 🟢 / 🟡 / 🔴
-
-export type AlertGrade = "S" | "A" | "B" | "C";
+// 核心資料型別定義。
+//
+// 【清理紀錄】原本這裡還有 MarketRegime/TradeLight/AlertGrade/IndicatorSet/RiskFlags/
+// OpportunityCandidate/DailyState（舊Opportunity Score系統的型別），該系統已整套移除，
+// 只留下資金階段系統（Phase/CapitalState）跟中性市場資料型別還在使用中。
 
 export interface Phase {
   index: number;
@@ -22,7 +20,7 @@ export interface CoinSnapshot {
   change24h: number; // %
   high24h: number;
   low24h: number;
-  volume24h: number; // quote volume (USDT) — 用於流動性判斷，不再依賴市值
+  volume24h: number; // quote volume (USDT)
 }
 
 export interface GlobalMarketSnapshot {
@@ -36,54 +34,6 @@ export interface GlobalMarketSnapshot {
 export interface FearGreed {
   value: number; // 0-100
   classification: string; // e.g. "Extreme Fear"
-  fetchedAt: string;
-}
-
-export interface IndicatorSet {
-  ema20: number;
-  ema50: number;
-  ema200: number | null;
-  rsi14: number;
-  macd: { macd: number; signal: number; histogram: number };
-  atr14: number | null;
-  bollinger: { upper: number; mid: number; lower: number };
-  trendScore: number; // 0-100
-  momentumScore: number; // 0-100
-  volumeScore: number; // 0-100
-}
-
-export interface RiskFlags {
-  overheated: boolean; // RSI 極端過熱
-  falseBreakoutRisk: boolean;
-  lowLiquidity: boolean;
-  chaseRisk: boolean; // 已暴漲，追高風險
-  reasons: string[]; // 觸發原因說明（人類可讀）
-}
-
-export interface OpportunityCandidate {
-  coin: CoinSnapshot;
-  indicators: IndicatorSet;
-  opportunityScore: number; // 0-100
-  entryQuality: number; // 0-100，進場點位品質（是否追高/貼近前高/量能確認/RR夠不夠），與 opportunityScore 分開評估
-  riskScore: number; // 0-100，越低越安全
-  grade: AlertGrade;
-  entryLow: number;
-  entryHigh: number;
-  stopLoss: number;
-  tp1: number;
-  tp2: number;
-  tp3: number;
-  riskRewardRatio: number; // 以 TP1 計算
-  reasonsFor: string[]; // 為什麼現在值得交易
-  reasonsAgainst: string[]; // 為什麼可能失敗 / 失效條件
-  riskFlags: RiskFlags;
-  doNotChase: boolean;
-}
-
-export interface DailyState {
-  light: TradeLight;
-  regime: MarketRegime;
-  headline: string;
   fetchedAt: string;
 }
 
