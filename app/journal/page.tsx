@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useMarketData } from "@/lib/useMarketData";
-import { fetchKlinesHistory, Candle } from "@/lib/binance";
+import { fetchKlinesHistory, fetchKlines, Candle } from "@/lib/binance";
 import { runMonteCarlo, MonteCarloResult } from "@/lib/monteCarlo";
 import {
   runVolumeBreakoutEventStudy,
@@ -21,6 +21,8 @@ import {
   RetestTrade,
   RetestStrategyReport,
 } from "@/lib/retestStrategyLab";
+import { evaluateLiveSignal, STATE_INFO, LiveSignal } from "@/lib/retestEngine";
+import { logSignal, loadSignalLog, SignalLogEntry } from "@/lib/signalLog";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -244,6 +246,55 @@ function OosVerdict(train: RetestStrategyReport, val: RetestStrategyReport, oos:
   };
 }
 
+function LiveSignalRow({ s }: { s: LiveSignal }) {
+  const info = STATE_INFO[s.state];
+  return (
+    <div className="flex items-center justify-between text-xs rounded-lg bg-panel px-3 py-2">
+      <span className="font-medium w-16 shrink-0">{s.symbol.replace("USDT", "")}</span>
+      <span>
+        {info.emoji} {info.label}
+      </span>
+      <span className="text-subtext">{s.direction ?? "—"}</span>
+      <span className="numeric-safe">{s.currentPrice != null ? s.currentPrice.toPrecision(6) : "—"}</span>
+    </div>
+  );
+}
+
+function LiveSignalDetailCard({ s }: { s: LiveSignal }) {
+  const info = STATE_INFO[s.state];
+  return (
+    <div className="rounded-xl bg-bull/10 border border-bull/30 p-3 mb-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-xl">{info.emoji}</span>
+        <span className="text-sm font-semibold">
+          {s.symbol.replace("USDT", "")} {s.direction === "LONG" ? "做多" : "做空"}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <div className="text-subtext">建議進場價</div>
+          <div className="font-semibold numeric-safe">{s.entryPrice?.toPrecision(6)}</div>
+        </div>
+        <div>
+          <div className="text-subtext">現價</div>
+          <div className="font-semibold numeric-safe">{s.currentPrice?.toPrecision(6)}</div>
+        </div>
+        <div>
+          <div className="text-subtext">停損</div>
+          <div className="font-semibold numeric-safe text-bear">{s.stopLoss?.toPrecision(6)}</div>
+        </div>
+        <div>
+          <div className="text-subtext">停利(1R)</div>
+          <div className="font-semibold numeric-safe text-bull">{s.takeProfit?.toPrecision(6)}</div>
+        </div>
+      </div>
+      <div className="text-[10px] text-subtext mt-2">
+        訊號時間：{s.signalTime ? new Date(s.signalTime * 1000).toLocaleString("zh-TW") : "—"}
+      </div>
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const { capitalState, paperOpen, paperClosed, paperStats, coins } = useMarketData();
 
@@ -261,6 +312,12 @@ export default function JournalPage() {
   const [vzResults, setVzResults] = useState<{ zone: number; direct: VolumeBreakoutReport; retest: VolumeBreakoutReport }[] | null>(
     null
   );
+
+  const [liveSignals, setLiveSignals] = useState<LiveSignal[] | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [liveLastUpdate, setLiveLastUpdate] = useState<number | null>(null);
+  const [signalLogEntries, setSignalLogEntries] = useState<SignalLogEntry[]>([]);
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
@@ -348,6 +405,48 @@ export default function JournalPage() {
     setVzLoading(false);
     setVzResults(results);
   };
+
+  // 即時訊號監控：用固定的、已驗證過的公式（觀察窗口=cbWindow、TP=1R、回踩容忍度=0.3%），
+  // 抓每個幣種最近一天的5分鐘K線，評估現在處在哪個狀態。跟回測用完全相同的偵測邏輯。
+  const runLiveSignalCheck = async () => {
+    setLiveLoading(true);
+    setLiveError(null);
+    const results: LiveSignal[] = [];
+    let successCount = 0;
+    for (const symbol of AUDIT_SYMBOLS) {
+      try {
+        const candles = await fetchKlines(symbol, "5m", 288);
+        if (candles.length > 0) {
+          successCount++;
+          const signal = evaluateLiveSignal(symbol, candles, cbWindow, OOS_TP, 0.3);
+          results.push(signal);
+          if (signal.state === "RETEST_CONFIRMED" && signal.direction && signal.entryPrice && signal.stopLoss && signal.takeProfit && signal.riskDistance && signal.signalTime) {
+            logSignal({
+              symbol,
+              direction: signal.direction,
+              entryPrice: signal.entryPrice,
+              stopLoss: signal.stopLoss,
+              takeProfit: signal.takeProfit,
+              riskDistance: signal.riskDistance,
+              signalTime: signal.signalTime,
+            });
+          }
+        }
+      } catch {
+        // 跳過失敗的幣種
+      }
+    }
+    setLiveLoading(false);
+    if (successCount === 0) {
+      setLiveError("所有幣種的即時資料都抓取失敗，請檢查網路連線後再試一次");
+      return;
+    }
+    setLiveSignals(results);
+    setLiveLastUpdate(Date.now());
+    setSignalLogEntries(loadSignalLog());
+  };
+
+  const activeSignals = liveSignals ? liveSignals.filter((s) => s.state === "RETEST_CONFIRMED") : [];
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
@@ -447,6 +546,84 @@ export default function JournalPage() {
           </div>
         </section>
       )}
+
+      {/* 即時訊號監控 */}
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-1">🔴 即時訊號監控</div>
+        <div className="text-xs text-subtext mb-2 leading-relaxed">
+          用跟2958筆回測完全相同的公式（觀察窗口={cbWindow}分鐘、TP=1R、回踩容忍度=±0.3%），檢查現在8個幣種各自處在哪個階段。只有🟢「A級進場訊號」代表現在符合完整條件，其他狀態都只是「正在觀察」，不是進場訊號。
+        </div>
+        <div className="text-[11px] text-warn mb-3 leading-relaxed">
+          ⚠️ 這是LIVE SIGNAL ONLY，不會自動下單。開盤區間長度沿用上面「回踩策略完整分析」設定的觀察窗口，要跑過一次那邊的分析才會生效。
+        </div>
+
+        <button
+          onClick={runLiveSignalCheck}
+          disabled={liveLoading}
+          className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
+        >
+          {liveLoading ? "檢查中…" : "檢查現在的訊號狀態"}
+        </button>
+
+        {liveError && <div className="text-xs text-warn mb-2">⚠️ {liveError}</div>}
+
+        {liveLastUpdate && (
+          <div className="text-[10px] text-subtext mb-2">
+            上次更新：{new Date(liveLastUpdate).toLocaleTimeString("zh-TW")}（要看最新狀態請重新按一次）
+          </div>
+        )}
+
+        {liveSignals && (
+          <div>
+            {activeSignals.length > 0 ? (
+              <div>
+                <div className="text-xs font-semibold mb-2 text-bull">
+                  {activeSignals.length} 個 A級進場訊號
+                </div>
+                {activeSignals.map((s) => (
+                  <LiveSignalDetailCard key={s.symbol} s={s} />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl bg-panel2 p-4 text-center text-sm text-subtext mb-3">
+                目前沒有符合條件的交易，不交易。
+              </div>
+            )}
+
+            <details className="mb-1">
+              <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                全部8個幣種目前狀態 ▾
+              </summary>
+              <div className="space-y-1.5">
+                {liveSignals.map((s) => (
+                  <LiveSignalRow key={s.symbol} s={s} />
+                ))}
+              </div>
+            </details>
+
+            {signalLogEntries.length > 0 && (
+              <details className="mt-3 mb-1">
+                <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
+                  歷史訊號紀錄（本機儲存，共{signalLogEntries.length}筆）▾
+                </summary>
+                <div className="space-y-1.5">
+                  {[...signalLogEntries]
+                    .reverse()
+                    .slice(0, 20)
+                    .map((e) => (
+                      <div key={e.id} className="flex items-center justify-between text-xs rounded-lg bg-panel px-3 py-2">
+                        <span className="font-medium w-16 shrink-0">{e.symbol.replace("USDT", "")}</span>
+                        <span className="text-subtext">{e.direction}</span>
+                        <span className="numeric-safe">{e.entryPrice.toPrecision(6)}</span>
+                        <span className="text-subtext">{new Date(e.signalTime * 1000).toLocaleDateString("zh-TW")}</span>
+                      </div>
+                    ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </section>
 
       {/* 一鍵：事件研究 + 回踩策略樣本外驗證 */}
       <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
@@ -616,4 +793,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-    }
+  }
