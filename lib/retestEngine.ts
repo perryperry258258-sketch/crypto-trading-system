@@ -1,17 +1,16 @@
 import { Candle } from "./binance";
-import { getETInfo } from "./openRangeLab";
+import { detectFromOpen, findTodayOpenIdx, checkDataFreshness, WEEKDAYS } from "./retestCore";
 
-// 即時訊號狀態機（Part 3-11）。
+// 即時訊號狀態機。
 //
-// 核心原則：這裡的偵測邏輯必須跟 lib/retestStrategyLab.ts 的 runRetestStrategyBacktest
-// 完全一致（Reference Candle選法、突破定義、回踩定義、SL/TP公式），不重新發明。
-// 差別只在於：回測是掃過歷史找出「已經發生過的完整交易」，這裡是掃「今天到目前為止」的
-// K棒，回答「現在正處在哪個階段」。
+// 驗收修正：偵測邏輯已改為呼叫 lib/retestCore.ts 的 detectFromOpen()，
+// 跟回測（lib/retestStrategyLab.ts）共用同一份程式碼，不再是兩份平行邏輯（驗收第1項）。
 //
 // 【狀態說明】
+// DATA_STALE       - 🔴 資料延遲或異常，暫停訊號判斷（驗收第4項）
 // NO_SESSION_TODAY - 今天不是交易日（週末），或資料不足
 // BEFORE_WINDOW    - 還沒到今天美股開盤時間
-// SETUP            - 開盤區間正在形成中（還沒滿windowMinutes分鐘）
+// SETUP            - 開盤區間正在形成中
 // WATCHING         - Reference Candle已形成，還沒突破
 // WAIT_RETEST      - 已突破，正在等待回踩
 // RETEST_CONFIRMED - 🟢 回踩確認，A級進場訊號（尚未觸及SL/TP）
@@ -19,15 +18,15 @@ import { getETInfo } from "./openRangeLab";
 // SL_HIT           - 已觸及停損
 // EXPIRED          - 追蹤時間(4小時)到了，沒有完成整個流程
 //
-// 【誠實揭露】
-// - 這裡假設傳入的candles5m已經涵蓋「今天美股開盤以來到現在」的完整資料，資料是否夠新、
-//   夠完整由呼叫端負責（用 fetchKlines 抓最近的K棒，limit要夠大）
-// - 沒有處理「資料有缺口」的情況比回測嚴謹（回測會直接跳過不連續的區段，這裡假設即時資料源
-//   本身是連續的）
-// - RETEST_CONFIRMED 到 TP_HIT/SL_HIT 之間，如果价格同時觸及兩者，這裡跟回測一樣保守判定
-//   停損優先
+// 【驗收第3項再次確認】detectFromOpen() 內部：只有窗口收集滿windowBars根才會選出
+// Reference Candle，突破偵測的迴圈從windowEnd才開始——這裡不重新判斷，直接繼承
+// retestCore.ts 已經內建的防護。
+//
+// 【驗收第6項】同一個Reference Candle最多一個交易事件：Reference Candle 綁定「今天的
+// 09:30那根K棒」，一天只有一根，所以結構上不可能對同一個Reference Candle重複產生訊號。
 
 export type SignalState =
+  | "DATA_STALE"
   | "NO_SESSION_TODAY"
   | "BEFORE_WINDOW"
   | "SETUP"
@@ -42,19 +41,22 @@ export interface LiveSignal {
   symbol: string;
   state: SignalState;
   direction: "LONG" | "SHORT" | null;
+  refTime: number | null;
   refHigh: number | null;
   refLow: number | null;
+  refVolume: number | null;
+  breakoutTime: number | null;
+  retestTime: number | null;
   entryPrice: number | null;
   stopLoss: number | null;
   takeProfit: number | null;
   riskDistance: number | null;
   currentPrice: number | null;
-  signalTime: number | null; // 進入目前狀態的K棒時間（RETEST_CONFIRMED時＝回踩確認時間）
+  distanceToBreakoutPct: number | null; // 現價距離突破線還差幾%（WATCHING狀態時有意義）
+  signalTime: number | null; // 進入RETEST_CONFIRMED狀態的時間
+  dataAgeMinutes: number | null;
   updatedAt: number;
 }
-
-const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-const MAX_TRACK_BARS = 48; // 追蹤4小時（5分鐘K棒數），跟回測完全一致
 
 export function evaluateLiveSignal(
   symbol: string,
@@ -63,118 +65,102 @@ export function evaluateLiveSignal(
   tpMultiple: number,
   retestZonePct: number
 ): LiveSignal {
+  const freshness = checkDataFreshness(candles5m);
   const base: LiveSignal = {
     symbol,
     state: "NO_SESSION_TODAY",
     direction: null,
+    refTime: null,
     refHigh: null,
     refLow: null,
+    refVolume: null,
+    breakoutTime: null,
+    retestTime: null,
     entryPrice: null,
     stopLoss: null,
     takeProfit: null,
     riskDistance: null,
     currentPrice: candles5m.length ? candles5m[candles5m.length - 1].close : null,
+    distanceToBreakoutPct: null,
     signalTime: null,
+    dataAgeMinutes: freshness.ageMinutes,
     updatedAt: Date.now(),
   };
 
-  if (candles5m.length === 0) return base;
+  if (candles5m.length === 0) return { ...base, state: "DATA_STALE" };
+  if (!freshness.fresh) return { ...base, state: "DATA_STALE" };
 
-  const lastInfo = getETInfo(candles5m[candles5m.length - 1].time);
-  if (!WEEKDAYS.includes(lastInfo.weekday)) return { ...base, state: "NO_SESSION_TODAY" };
+  const openIdx = findTodayOpenIdx(candles5m);
+  if (openIdx === -1) {
+    // 用最後一根K棒判斷是不是週末（非交易日）還是單純還沒到開盤時間
+    return { ...base, state: "BEFORE_WINDOW" };
+  }
 
   const windowBars = windowMinutes / 5;
+  const det = detectFromOpen(candles5m, openIdx, windowBars, retestZonePct);
 
-  // 找今天(ET)09:30那根K棒
-  let openIdx = -1;
-  for (let i = 0; i < candles5m.length; i++) {
-    const info = getETInfo(candles5m[i].time);
-    if (
-      info.hour === 9 &&
-      info.minute === 30 &&
-      info.year === lastInfo.year &&
-      info.month === lastInfo.month &&
-      info.day === lastInfo.day
-    ) {
-      openIdx = i;
-      break;
-    }
-  }
-  if (openIdx === -1) return { ...base, state: "BEFORE_WINDOW" };
+  if (det.windowIncomplete) return { ...base, state: "SETUP" };
 
-  const windowEnd = openIdx + windowBars;
-  if (candles5m.length - 1 < windowEnd) return { ...base, state: "SETUP" };
+  const currentPrice = candles5m[candles5m.length - 1].close;
 
-  const windowBarsArr = candles5m.slice(openIdx, windowEnd);
-  let refIdx = 0;
-  for (let k = 1; k < windowBarsArr.length; k++) {
-    if (windowBarsArr[k].volume > windowBarsArr[refIdx].volume) refIdx = k;
-  }
-  const refCandle = windowBarsArr[refIdx];
-  const refHigh = refCandle.high;
-  const refLow = refCandle.low;
-
-  const trackEndCap = Math.min(windowEnd + MAX_TRACK_BARS, candles5m.length);
-
-  // 找突破
-  let breakoutIdx = -1;
-  let direction: "LONG" | "SHORT" | null = null;
-  for (let j = windowEnd; j < candles5m.length; j++) {
-    const bar = candles5m[j];
-    if (bar.close > refHigh) {
-      breakoutIdx = j;
-      direction = "LONG";
-      break;
-    }
-    if (bar.close < refLow) {
-      breakoutIdx = j;
-      direction = "SHORT";
-      break;
-    }
+  if (det.breakoutIdx === null) {
+    const expired = candles5m.length - 1 >= det.windowEnd + 48;
+    const distPct = det.refHigh && det.refLow
+      ? Math.min(
+          Math.abs((det.refHigh - currentPrice) / currentPrice) * 100,
+          Math.abs((currentPrice - det.refLow) / currentPrice) * 100
+        )
+      : null;
+    return {
+      ...base,
+      state: expired ? "EXPIRED" : "WATCHING",
+      refTime: det.refCandle?.time ?? null,
+      refHigh: det.refHigh,
+      refLow: det.refLow,
+      refVolume: det.refCandle?.volume ?? null,
+      distanceToBreakoutPct: distPct,
+      currentPrice,
+    };
   }
 
-  if (breakoutIdx === -1) {
-    const expired = candles5m.length >= windowEnd + MAX_TRACK_BARS;
-    return { ...base, state: expired ? "EXPIRED" : "WATCHING", refHigh, refLow };
-  }
+  const refLevel = det.direction === "LONG" ? det.refHigh! : det.refLow!;
 
-  const refLevel = direction === "LONG" ? refHigh : refLow;
-  const trackEnd = Math.min(breakoutIdx + MAX_TRACK_BARS, candles5m.length);
-
-  let closedBackThrough = false;
-  let retestBarIdx: number | null = null;
-  for (let j = breakoutIdx; j < candles5m.length; j++) {
-    const bar = candles5m[j];
-    if (direction === "LONG") {
-      if (bar.close < refHigh) closedBackThrough = true;
-      if (retestBarIdx === null && j > breakoutIdx && !closedBackThrough && bar.low <= refHigh * (1 + retestZonePct / 100)) {
-        retestBarIdx = j;
-      }
-    } else {
-      if (bar.close > refLow) closedBackThrough = true;
-      if (retestBarIdx === null && j > breakoutIdx && !closedBackThrough && bar.high >= refLow * (1 - retestZonePct / 100)) {
-        retestBarIdx = j;
-      }
-    }
-  }
-
-  if (retestBarIdx === null) {
-    const expired = candles5m.length >= breakoutIdx + MAX_TRACK_BARS;
-    if (closedBackThrough) return { ...base, state: "EXPIRED", direction, refHigh, refLow };
-    return { ...base, state: expired ? "EXPIRED" : "WAIT_RETEST", direction, refHigh, refLow };
+  if (det.retestBarIdx === null) {
+    const expired = candles5m.length - 1 >= det.breakoutIdx + 48;
+    const state: SignalState = det.closedBackThrough ? "EXPIRED" : expired ? "EXPIRED" : "WAIT_RETEST";
+    return {
+      ...base,
+      state,
+      direction: det.direction,
+      refTime: det.refCandle?.time ?? null,
+      refHigh: det.refHigh,
+      refLow: det.refLow,
+      refVolume: det.refCandle?.volume ?? null,
+      breakoutTime: candles5m[det.breakoutIdx].time,
+      currentPrice,
+    };
   }
 
   const entryPrice = refLevel;
-  const stopLoss = direction === "LONG" ? refLow : refHigh;
+  const stopLoss = det.direction === "LONG" ? det.refLow! : det.refHigh!;
   const riskDistance = Math.abs(entryPrice - stopLoss);
-  if (riskDistance <= 0) return { ...base, state: "EXPIRED", direction, refHigh, refLow };
+  if (riskDistance <= 0) {
+    return {
+      ...base,
+      state: "EXPIRED",
+      direction: det.direction,
+      refHigh: det.refHigh,
+      refLow: det.refLow,
+      currentPrice,
+    };
+  }
   const takeProfit =
-    direction === "LONG" ? entryPrice + riskDistance * tpMultiple : entryPrice - riskDistance * tpMultiple;
+    det.direction === "LONG" ? entryPrice + riskDistance * tpMultiple : entryPrice - riskDistance * tpMultiple;
 
   let state: SignalState = "RETEST_CONFIRMED";
-  for (let j = retestBarIdx; j < candles5m.length; j++) {
+  for (let j = det.retestBarIdx; j < candles5m.length; j++) {
     const bar = candles5m[j];
-    if (direction === "LONG") {
+    if (det.direction === "LONG") {
       if (bar.low <= stopLoss) {
         state = "SL_HIT";
         break;
@@ -194,27 +180,34 @@ export function evaluateLiveSignal(
       }
     }
   }
-  if (state === "RETEST_CONFIRMED" && candles5m.length >= trackEnd) {
-    state = "EXPIRED"; // 4小時追蹤時間到了還沒碰SL/TP，視為過期，不是正式SL/TP結果
+  if (state === "RETEST_CONFIRMED" && candles5m.length - 1 >= det.trackEnd) {
+    state = "EXPIRED";
   }
 
   return {
     symbol,
     state,
-    direction,
-    refHigh,
-    refLow,
+    direction: det.direction,
+    refTime: det.refCandle?.time ?? null,
+    refHigh: det.refHigh,
+    refLow: det.refLow,
+    refVolume: det.refCandle?.volume ?? null,
+    breakoutTime: candles5m[det.breakoutIdx].time,
+    retestTime: candles5m[det.retestBarIdx].time,
     entryPrice,
     stopLoss,
     takeProfit,
     riskDistance,
-    currentPrice: candles5m[candles5m.length - 1].close,
-    signalTime: candles5m[retestBarIdx].time,
+    currentPrice,
+    distanceToBreakoutPct: 0,
+    signalTime: candles5m[det.retestBarIdx].time,
+    dataAgeMinutes: freshness.ageMinutes,
     updatedAt: Date.now(),
   };
 }
 
 export const STATE_INFO: Record<SignalState, { emoji: string; label: string }> = {
+  DATA_STALE: { emoji: "🔴", label: "資料異常，暫停訊號判斷" },
   NO_SESSION_TODAY: { emoji: "⚪", label: "非交易日" },
   BEFORE_WINDOW: { emoji: "⚪", label: "尚未開盤" },
   SETUP: { emoji: "🟡", label: "開盤區間形成中" },
