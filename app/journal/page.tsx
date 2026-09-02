@@ -433,6 +433,7 @@ export default function JournalPage() {
   const [cbWindow, setCbWindow] = useState<30 | 60 | 90 | 120>(60);
   const [cbLoading, setCbLoading] = useState(false);
   const [cbError, setCbError] = useState<string | null>(null);
+  const [cbWarning, setCbWarning] = useState<string | null>(null);
   const [cbProgress, setCbProgress] = useState("");
   const [cbEvents, setCbEvents] = useState<VolumeBreakoutEvent[] | null>(null);
   const [cbTrades, setCbTrades] = useState<RetestTrade[] | null>(null);
@@ -457,6 +458,7 @@ export default function JournalPage() {
   const runCombinedAnalysis = async () => {
     setCbLoading(true);
     setCbError(null);
+    setCbWarning(null);
     setCbEvents(null);
     setCbTrades(null);
     setCbCandles(null);
@@ -464,19 +466,27 @@ export default function JournalPage() {
     const candlesBySymbol: Record<string, Candle[]> = {};
     const events: VolumeBreakoutEvent[] = [];
     const trades: RetestTrade[] = [];
+    const failedSymbols: string[] = [];
     let successCount = 0;
     for (const symbol of AUDIT_SYMBOLS) {
       setCbProgress(`抓取 ${symbol.replace("USDT", "")} 5分鐘資料中…`);
-      try {
-        const candles = await fetchKlinesHistory(symbol, "5m", cbDays * 288);
-        if (candles.length >= 500) {
-          successCount++;
-          candlesBySymbol[symbol] = candles;
-          events.push(...runVolumeBreakoutEventStudy(symbol, candles, cbWindow));
-          trades.push(...runRetestStrategyBacktest(symbol, candles, cbWindow, OOS_TP));
+      let candles: Candle[] | null = null;
+      // 抓失敗重試一次（2年長時間抓取偶爾會遇到暫時性網路問題），還是失敗才真的算這個幣種失敗
+      for (let attempt = 0; attempt < 2 && !candles; attempt++) {
+        try {
+          const c = await fetchKlinesHistory(symbol, "5m", cbDays * 288);
+          if (c.length >= 500) candles = c;
+        } catch {
+          // 繼續重試或標記失敗
         }
-      } catch {
-        // 跳過失敗的幣種
+      }
+      if (candles) {
+        successCount++;
+        candlesBySymbol[symbol] = candles;
+        events.push(...runVolumeBreakoutEventStudy(symbol, candles, cbWindow));
+        trades.push(...runRetestStrategyBacktest(symbol, candles, cbWindow, OOS_TP));
+      } else {
+        failedSymbols.push(symbol.replace("USDT", ""));
       }
     }
     setCbLoading(false);
@@ -484,6 +494,11 @@ export default function JournalPage() {
     if (successCount === 0) {
       setCbError("所有幣種的歷史資料都抓取失敗，請檢查網路連線後再試一次");
       return;
+    }
+    if (failedSymbols.length > 0) {
+      setCbWarning(
+        `⚠️ ${failedSymbols.join("、")} 這 ${failedSymbols.length} 個幣種抓取失敗（重試過一次仍失敗），下面所有數字都不包含它們，不是「這個幣種沒有訊號」——建議稍後單獨重跑一次確認。`
+      );
     }
     setCbCandles(candlesBySymbol);
     setCbEvents(events);
@@ -565,6 +580,7 @@ export default function JournalPage() {
     setLiveLoading(true);
     setLiveError(null);
     const results: LiveSignal[] = [];
+    const failedSymbols: string[] = [];
     let successCount = 0;
     for (const symbol of AUDIT_SYMBOLS) {
       try {
@@ -574,13 +590,16 @@ export default function JournalPage() {
         results.push(signal);
         upsertFromLiveSignal(signal, OOS_TP);
       } catch {
-        // 抓取失敗：這個幣種這次不評估，不假造資料
+        failedSymbols.push(symbol.replace("USDT", ""));
       }
     }
     setLiveLoading(false);
     if (successCount === 0) {
       setLiveError("所有幣種的即時資料都抓取失敗，請檢查網路連線後再試一次");
       return;
+    }
+    if (failedSymbols.length > 0) {
+      setLiveError(`⚠️ ${failedSymbols.join("、")} 這次抓取失敗，沒有包含在下面的結果裡，重新按一次應該就會恢復。`);
     }
     setLiveSignals(results);
     setLiveLastUpdate(Date.now());
@@ -770,6 +789,7 @@ export default function JournalPage() {
         </button>
 
         {cbError && <div className="text-xs text-warn mb-2">⚠️ {cbError}</div>}
+        {cbWarning && <div className="text-xs text-warn mb-2 leading-relaxed">{cbWarning}</div>}
 
         {trainReport && valReport && oosReport && oosVerdict && (
           <div>
@@ -879,4 +899,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-              }
+      }
