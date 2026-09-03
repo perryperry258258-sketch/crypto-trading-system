@@ -179,3 +179,32 @@ export function loadOosSummary(): OosSummary | null {
     return null;
   }
 }
+
+// 樣本外原始交易清單（R值＋進場時間）。給資金成長模擬器用，跟 OosSummary 不同——
+// OosSummary只存彙總後的統計數字，這裡存每一筆的原始R值，才能做逐筆蒙地卡羅重抽樣模擬。
+// 一樣是每次跑完「一鍵執行完整分析」就更新一次，不用每次要模擬都重跑2年回測。
+
+export interface OosTradeRecord {
+  rMultiple: number;
+  entryTime: number; // unix秒
+}
+
+const OOS_TRADES_KEY = "cts_oos_trades_v1";
+const MAX_OOS_TRADES = 3000;
+
+export function saveOosTrades(trades: OosTradeRecord[]) {
+  try {
+    localStorage.setItem(OOS_TRADES_KEY, JSON.stringify(trades.slice(-MAX_OOS_TRADES)));
+  } catch {
+    // 忽略儲存失敗
+  }
+}
+
+export function loadOosTrades(): OosTradeRecord[] {
+  try {
+    const raw = localStorage.getItem(OOS_TRADES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
