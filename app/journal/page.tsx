@@ -1034,7 +1034,7 @@ export default function JournalPage() {
               value={exportText}
               className="w-full bg-panel2 border border-border rounded-xl px-3 py-2 text-[10px] numeric-safe"
               style={{ height: 100 }}
-              onFocus={(e) => e.target.select()}
+              onFocus={(e) => e.currentTarget.select()}
             />
             <button
               onClick={copyExportText}
@@ -1054,4 +1054,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-      }
+}
