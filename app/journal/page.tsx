@@ -27,9 +27,12 @@ import {
   loadSignalRecords,
   auditSignalRecords,
   saveOosSummary,
+  saveOosTrades,
+  loadOosTrades,
   SignalRecord,
   PaperReport,
 } from "@/lib/signalLog";
+import { runGrowthSimulation, GrowthSimResult } from "@/lib/growthSimulator";
 import EquityCurve from "@/components/EquityCurve";
 
 const lockLabel: Record<string, { label: string; note: string; className: string }> = {
@@ -113,7 +116,7 @@ function VolumeBreakoutCard({ r }: { r: VolumeBreakoutReport }) {
           <div className="font-semibold numeric-safe">{r.achieved3Rate.toFixed(0)}%</div>
         </div>
       </div>
-      <div className="text-[10px] text-subtext mb-1">MFE / MAE（平均，%）</div>
+      <div className="text-[10px] text-subtext mb-1">最大有利波動MFE／最大不利波動MAE（平均，%）</div>
       <div className="grid grid-cols-4 gap-1 text-center text-[11px]">
         <div>
           <div className="text-subtext">30分</div>
@@ -372,7 +375,7 @@ function LiveSignalDetailCard({ s }: { s: LiveSignal }) {
 function PaperComparisonCard({ backtest, paper }: { backtest: RetestStrategyReport; paper: PaperReport }) {
   return (
     <div className="rounded-xl bg-panel2 p-3 mb-3">
-      <div className="text-xs font-semibold mb-2">回測 vs Paper Trading（TP=1R）</div>
+      <div className="text-xs font-semibold mb-2">回測 vs 模擬交易（TP=1R）</div>
       <table className="w-full text-[11px] border-collapse">
         <thead>
           <tr>
@@ -427,7 +430,7 @@ function PaperComparisonCard({ backtest, paper }: { backtest: RetestStrategyRepo
 }
 
 export default function JournalPage() {
-  const { capitalState } = useMarketData();
+  const { capital, capitalState } = useMarketData();
 
   const [cbDays, setCbDays] = useState(365);
   const [cbWindow, setCbWindow] = useState<30 | 60 | 90 | 120>(60);
@@ -450,6 +453,28 @@ export default function JournalPage() {
   const [liveError, setLiveError] = useState<string | null>(null);
   const [liveLastUpdate, setLiveLastUpdate] = useState<number | null>(null);
   const [signalRecords, setSignalRecords] = useState<SignalRecord[]>([]);
+
+  const [simResult, setSimResult] = useState<GrowthSimResult | null>(null);
+  const [simLoading, setSimLoading] = useState(false);
+  const [simError, setSimError] = useState<string | null>(null);
+  const TARGET_CAPITAL = 1_000_000_000;
+
+  const runGrowthSim = () => {
+    setSimError(null);
+    const trades = loadOosTrades();
+    if (trades.length < 30) {
+      setSimError("樣本外交易紀錄不足（少於30筆），請先去上面跑一次「一鍵執行完整分析」。");
+      setSimResult(null);
+      return;
+    }
+    setSimLoading(true);
+    // 用 setTimeout 讓 loading 狀態先畫出來，模擬計算量不小（1000次×最多2萬筆交易）
+    setTimeout(() => {
+      const result = runGrowthSimulation(trades, capital, TARGET_CAPITAL, 1000, 20000);
+      setSimResult(result);
+      setSimLoading(false);
+    }, 50);
+  };
 
   const lock = lockLabel[capitalState.profitLockLevel];
 
@@ -523,6 +548,8 @@ export default function JournalPage() {
         tpMultiple: OOS_TP,
         computedAt: Date.now(),
       });
+      // 存一份原始交易清單（R值+時間）給資金成長模擬器用，不是每次都要重跑2年回測才能模擬。
+      saveOosTrades(split.oos.map((t) => ({ rMultiple: t.rMultiple, entryTime: t.entryTime })));
     }
   };
 
@@ -631,7 +658,7 @@ export default function JournalPage() {
           用跟2958筆回測完全相同的公式（觀察窗口={cbWindow}分鐘、預設60分鐘、TP=1R、回踩容忍度=±0.3%），檢查現在8個幣種各自處在哪個階段。只有🟢「A級進場訊號」代表現在符合完整條件，其他狀態都只是「正在觀察」，不是進場訊號。
         </div>
         <div className="text-[11px] text-warn mb-3 leading-relaxed">
-          ⚠️ 這是LIVE SIGNAL ONLY，不會自動下單。可以直接按下面按鈕檢查，不需要先跑下面的完整分析。
+          ⚠️ 這只提供即時訊號，不會自動下單。可以直接按下面按鈕檢查，不需要先跑下面的完整分析。
         </div>
 
         <button
@@ -689,7 +716,7 @@ export default function JournalPage() {
 
             <details className="mb-1">
               <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
-                Debug Mode：8個幣種完整狀態 ▾
+                詳細資料：8個幣種完整狀態 ▾
               </summary>
               <div>
                 {liveSignals.map((s) => (
@@ -701,7 +728,7 @@ export default function JournalPage() {
             {signalRecords.length > 0 && (
               <details className="mt-3 mb-1">
                 <summary className="text-xs font-semibold text-subtext cursor-pointer select-none mb-2">
-                  Signal Record（本機儲存，共{signalRecords.length}筆）▾
+                  訊號紀錄（本機儲存，共{signalRecords.length}筆）▾
                 </summary>
                 <div className="space-y-1.5">
                   {[...signalRecords]
@@ -897,6 +924,72 @@ export default function JournalPage() {
           </div>
         )}
       </section>
+
+      {/* 資金成長機率模擬器 */}
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-1">📈 資金成長機率模擬器</div>
+        <div className="text-xs text-subtext mb-2 leading-relaxed">
+          用樣本外段真實的{loadOosTrades().length || "—"}筆交易（真實R值分布、真實進場間隔）蒙地卡羅重抽樣1000次，套用現有資金階段風控框架（`lib/phases.ts`，完全沒有修改），從目前本金 NT${capital.toLocaleString()} 模擬到 NT${TARGET_CAPITAL.toLocaleString()} 大概要多久。這是機率估計，不是預測。
+        </div>
+        <details className="text-[11px] text-subtext mb-3">
+          <summary className="cursor-pointer select-none">這個模擬做了什麼簡化（誠實揭露）▾</summary>
+          <ul className="list-disc list-inside mt-2 space-y-1">
+            <li>樣本只有500多筆，未來實際表現可能跟這批樣本的分布不一樣</li>
+            <li>「交易間隔」是從歷史進場時間反推的統計間隔，不保證未來訊號頻率一樣</li>
+            <li>PROTECT_MODE（回撤達20%）理論上禁止新交易，這裡為了不讓模擬卡死，簡化成仍以0.1%極小風險嘗試，這是模擬器內部假設，不代表系統實際允許</li>
+            <li>沒有額外計算手續費/滑價以外的真實世界摩擦（訊號延遲、實際成交滑點），沿用回測本身已經扣過的R值</li>
+          </ul>
+        </details>
+
+        <button
+          onClick={runGrowthSim}
+          disabled={simLoading}
+          className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mb-3"
+        >
+          {simLoading ? "模擬中…" : "執行模擬"}
+        </button>
+
+        {simError && <div className="text-xs text-warn mb-2">⚠️ {simError}</div>}
+
+        {simResult && (
+          <div>
+            <div className="text-xs text-subtext mb-2">
+              {simResult.simulations.toLocaleString()}次模擬中，{simResult.reachedCount.toLocaleString()}次在2萬筆交易上限內達標（
+              {simResult.reachedPct.toFixed(1)}%）
+            </div>
+            {simResult.tradesNeeded && simResult.daysNeeded ? (
+              <div className="space-y-2">
+                <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                  <div>
+                    <div className="text-subtext">樂觀（P10）</div>
+                    <div className="font-semibold numeric-safe">{simResult.tradesNeeded.p10.toLocaleString()}筆</div>
+                    <div className="text-subtext numeric-safe">{(simResult.daysNeeded.p10 / 365).toFixed(1)}年</div>
+                  </div>
+                  <div>
+                    <div className="text-subtext">中位數（P50）</div>
+                    <div className="font-semibold numeric-safe text-bull">{simResult.tradesNeeded.p50.toLocaleString()}筆</div>
+                    <div className="text-subtext numeric-safe">{(simResult.daysNeeded.p50 / 365).toFixed(1)}年</div>
+                  </div>
+                  <div>
+                    <div className="text-subtext">悲觀（P90）</div>
+                    <div className="font-semibold numeric-safe">{simResult.tradesNeeded.p90.toLocaleString()}筆</div>
+                    <div className="text-subtext numeric-safe">{(simResult.daysNeeded.p90 / 365).toFixed(1)}年</div>
+                  </div>
+                </div>
+                {simResult.reachedPct < 50 && (
+                  <div className="text-[11px] text-warn leading-relaxed">
+                    ⚠️ 超過一半的模擬次數在2萬筆交易內都沒有達標，代表用目前的風控框架＋樣本外表現，達到目標的機率本身不高，時間數字只是「有達標的那些次」的估計，不是整體的保證。
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-subtext text-center py-2">
+                1000次模擬全部沒有在2萬筆交易內達標——用目前的風險框架＋樣本外表現，這是一個誠實但不好聽的結果。
+              </div>
+            )}
+          </div>
+        )}
+      </section>
     </main>
   );
-      }
+          }
