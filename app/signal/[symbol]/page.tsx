@@ -6,7 +6,7 @@ import { fetchKlines } from "@/lib/binance";
 import { evaluateLiveSignal, LiveSignal } from "@/lib/retestEngine";
 import { upsertFromLiveSignal } from "@/lib/signalLog";
 import { StatusDot } from "@/components/ui";
-import { SIGNAL_STATE_THEME } from "@/components/statusTheme";
+import { getSignalDisplayTheme } from "@/components/statusTheme";
 
 // 新增頁面：訊號詳情（UI/UX改版規格要求）。用「進度流程」呈現目前走到哪一步，
 // 取代大量文字。資料來源完全沿用 evaluateLiveSignal，沒有新增任何判斷邏輯，
@@ -76,7 +76,7 @@ export default function SignalDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol]);
 
-  const theme = signal ? SIGNAL_STATE_THEME[signal.state] : null;
+  const theme = signal ? getSignalDisplayTheme(signal) : null;
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
