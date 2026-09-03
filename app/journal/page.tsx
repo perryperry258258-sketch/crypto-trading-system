@@ -27,6 +27,7 @@ import {
   loadSignalRecords,
   auditSignalRecords,
   saveOosSummary,
+  loadOosSummary,
   saveOosTrades,
   loadOosTrades,
   SignalRecord,
@@ -1054,4 +1055,4 @@ export default function JournalPage() {
       </section>
     </main>
   );
-}
+            }
