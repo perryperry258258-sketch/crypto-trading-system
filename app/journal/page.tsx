@@ -476,6 +476,30 @@ export default function JournalPage() {
     }, 50);
   };
 
+  const [exportText, setExportText] = useState<string | null>(null);
+  const [exportCopied, setExportCopied] = useState(false);
+
+  const buildExportText = () => {
+    const summary = loadOosSummary();
+    const trades = loadOosTrades();
+    if (!summary || trades.length === 0) {
+      setExportText(null);
+      return;
+    }
+    setExportText(JSON.stringify({ summary, trades }));
+    setExportCopied(false);
+  };
+
+  const copyExportText = async () => {
+    if (!exportText) return;
+    try {
+      await navigator.clipboard.writeText(exportText);
+      setExportCopied(true);
+    } catch {
+      // 部分瀏覽器可能不支援clipboard API，這時使用者可以自己長按選取文字複製
+    }
+  };
+
   const lock = lockLabel[capitalState.profitLockLevel];
 
   // 一鍵執行：抓一次5分鐘資料，同時做事件研究 + 回踩策略TP=1R的訓練/驗證/樣本外驗證。
@@ -990,6 +1014,44 @@ export default function JournalPage() {
           </div>
         )}
       </section>
+
+      {/* 匯出樣本外資料（永久保存用） */}
+      <section className="rounded-2xl border border-border bg-panel p-4 mb-3">
+        <div className="text-sm font-semibold mb-1">💾 匯出樣本外資料</div>
+        <div className="text-xs text-subtext mb-3 leading-relaxed">
+          瀏覽器儲存（localStorage）換裝置、換瀏覽器、清資料就會不見。跑完上面「一鍵執行完整分析」後，按這裡產生一段文字，複製貼給我，我可以把這份資料寫進程式碼裡當內建預設值，之後就算清掉瀏覽器資料也不用重跑2年回測。
+        </div>
+        <button
+          onClick={buildExportText}
+          className="btn-primary w-full border border-border bg-panel2 text-sm mb-3"
+        >
+          產生匯出文字
+        </button>
+        {exportText ? (
+          <div>
+            <textarea
+              readOnly
+              value={exportText}
+              className="w-full bg-panel2 border border-border rounded-xl px-3 py-2 text-[10px] numeric-safe"
+              style={{ height: 100 }}
+              onFocus={(e) => e.target.select()}
+            />
+            <button
+              onClick={copyExportText}
+              className="btn-primary w-full bg-accent/20 text-accent border border-accent/40 text-sm mt-2"
+            >
+              {exportCopied ? "已複製 ✓" : "複製到剪貼簿"}
+            </button>
+            <div className="text-[10px] text-subtext mt-2">
+              如果「複製到剪貼簿」按了沒反應（少數瀏覽器不支援），點一下上面的文字框，它會自動全選，長按選單裡選「複製」也可以。
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-subtext text-center py-2">
+            還沒有資料可以匯出，先跑一次上面的「一鍵執行完整分析」。
+          </div>
+        )}
+      </section>
     </main>
   );
-          }
+      }
