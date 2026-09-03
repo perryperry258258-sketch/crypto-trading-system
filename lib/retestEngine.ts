@@ -60,11 +60,23 @@ export interface LiveSignal {
 
 export function evaluateLiveSignal(
   symbol: string,
-  candles5m: Candle[],
+  candles5mRaw: Candle[],
   windowMinutes: 30 | 60 | 90 | 120,
   tpMultiple: number,
   retestZonePct: number
 ): LiveSignal {
+  // 驗收修正：Binance /klines 沒指定 endTime 時，回傳的最後一根K棒可能還在成型中
+  // （收盤價=即時價格，還沒走完5分鐘），如果拿它當「已收盤」資料判斷，會讓同一段
+  // 歷史在不同次輪詢得出不同結論（這次判定可以進場、下次重算又變已過期）。
+  // 2年回測完全不會遇到這個問題，因為回測資料本來就都是已經收盤的歷史K棒——
+  // 這裡丟掉還沒真正收盤的最後一根，讓即時引擎看到的資料型態跟回測一致，
+  // 沒有改變任何策略規則（Reference Candle/突破/回踩/Entry/SL/TP算法完全不動）。
+  const nowSec = Date.now() / 1000;
+  const candles5m =
+    candles5mRaw.length > 0 && candles5mRaw[candles5mRaw.length - 1].time + 300 > nowSec
+      ? candles5mRaw.slice(0, -1)
+      : candles5mRaw;
+
   const freshness = checkDataFreshness(candles5m);
   const base: LiveSignal = {
     symbol,
