@@ -1,4 +1,5 @@
 import { LiveSignal } from "./retestEngine";
+import { OOS_SEED } from "./oosSeed";
 
 // Signal Record（驗收第5項＋第8項）。
 //
@@ -174,10 +175,11 @@ export function saveOosSummary(summary: OosSummary) {
 export function loadOosSummary(): OosSummary | null {
   try {
     const raw = localStorage.getItem(OOS_SUMMARY_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (raw) return JSON.parse(raw);
   } catch {
-    return null;
+    // 讀取失敗，往下 fallback
   }
+  return OOS_SEED?.summary ?? null;
 }
 
 // 樣本外原始交易清單（R值＋進場時間）。給資金成長模擬器用，跟 OosSummary 不同——
@@ -203,8 +205,12 @@ export function saveOosTrades(trades: OosTradeRecord[]) {
 export function loadOosTrades(): OosTradeRecord[] {
   try {
     const raw = localStorage.getItem(OOS_TRADES_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
   } catch {
-    return [];
+    // 讀取失敗，往下 fallback
   }
+  return OOS_SEED?.trades ?? [];
 }
