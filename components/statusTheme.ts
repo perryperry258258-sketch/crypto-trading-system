@@ -40,3 +40,16 @@ export const COLOR_CLASS: Record<
   grey: { dot: "bg-subtext", text: "text-subtext", bg: "bg-panel2", border: "border-border" },
   red: { dot: "bg-bear", text: "text-bear", bg: "bg-bear/10", border: "border-bear/30" },
 };
+
+// 顯示層細分：EXPIRED這個狀態底下其實有兩種不同情況——
+// (a) 曾經確認回踩、可以進場，但4小時內沒等到停損或停利就到期了 → 這其實是「錯過進場」，
+//     使用者如果那段時間沒看到，就真的錯過了這次機會，跟單純「這次沒有形成訊號」意義不同。
+// (b) 從頭到尾沒有確認回踩就過期（突破後沒回踩，或回踩失敗）→ 維持原本的「已過期」。
+// 這只是把 evaluateLiveSignal() 已經算出來的 state + retestTime 兩個既有欄位拿來組合判斷，
+// 沒有新增或修改任何交易判斷邏輯，純粹是顯示文字的細分。
+export function getSignalDisplayTheme(s: { state: SignalState; retestTime: number | null }): StatusTheme {
+  if (s.state === "EXPIRED" && s.retestTime != null) {
+    return { color: "yellow", label: "錯過進場" };
+  }
+  return SIGNAL_STATE_THEME[s.state];
+}
