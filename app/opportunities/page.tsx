@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { fetchKlines } from "@/lib/binance";
 import { evaluateLiveSignal, LiveSignal } from "@/lib/retestEngine";
 import { upsertFromLiveSignal } from "@/lib/signalLog";
-import { SignalCard, SignalListRow, EmptyState } from "@/components/ui";
+import { SignalCard, SignalListRow, EmptyState, sortByRecency } from "@/components/ui";
 
 // UI/UX改版：只改視覺呈現與篩選分頁，抓取/判斷邏輯（evaluateLiveSignal）完全不變。
 
@@ -55,7 +55,7 @@ export default function OpportunitiesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const activeSignals = signals ? signals.filter((s) => s.state === "RETEST_CONFIRMED") : [];
+  const activeSignals = sortByRecency(signals ? signals.filter((s) => s.state === "RETEST_CONFIRMED") : []);
   const waitingSignals = signals ? signals.filter((s) => WAITING_STATES.has(s.state)) : [];
 
   const filtered =
