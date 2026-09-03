@@ -1,7 +1,7 @@
 "use client";
 
-import Link from "next/link";
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useMarketData } from "@/lib/useMarketData";
 import { fetchKlines } from "@/lib/binance";
 import { evaluateLiveSignal, LiveSignal } from "@/lib/retestEngine";
@@ -12,25 +12,13 @@ import {
   showNotification,
   NotificationPermissionStatus,
 } from "@/lib/notifications";
-import { Card, SignalCard, EmptyState, StatusDot } from "@/components/ui";
+import { Card, SignalCard, EmptyState, StatusDot, MarketMiniTable, sortByRecency } from "@/components/ui";
 
 // ============================================================
-// UI/UX 改版：這個檔案只改視覺呈現，資料來源、抓取邏輯、A級訊號判斷
-// （evaluateLiveSignal）、Signal Record 寫入（upsertFromLiveSignal）全部
-// 沿用不變，跟改版前完全一樣的函式呼叫。
+// UI/UX 最終整理：這個檔案只改視覺呈現與版面結構，資料來源、抓取邏輯、
+// A級訊號判斷（evaluateLiveSignal）、Signal Record 寫入（upsertFromLiveSignal）
+// 全部沿用不變，跟改版前完全一樣的函式呼叫，沒有新增或修改任何交易邏輯。
 // ============================================================
-
-function fmt(n: number) {
-  if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  return n.toPrecision(4);
-}
-
-const statusBadge: Record<string, { label: string; color: "green" | "yellow" | "red" }> = {
-  LIVE: { label: "即時", color: "green" },
-  CONNECTING: { label: "連線中", color: "yellow" },
-  DELAYED: { label: "延遲", color: "yellow" },
-  ERROR: { label: "資料異常", color: "red" },
-};
 
 const AUDIT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT"];
 const ENGINE_WINDOW = 60;
@@ -42,10 +30,23 @@ const OOS_VERDICT_INFO: Record<OosSummary["verdict"], { color: "green" | "yellow
   FAILED: { color: "red", label: "未通過樣本外驗證" },
 };
 
-export default function Home() {
-  const { capital, capitalState, btc, eth, errors, loading, reload, lastUpdated, connectionStatus } = useMarketData();
+function computeSystemStatus(
+  connectionStatus: string,
+  signals: LiveSignal[] | null,
+  stillLoading: boolean
+): { color: "green" | "yellow" | "red"; label: string } {
+  const staleCount = signals ? signals.filter((s) => s.state === "DATA_STALE").length : 0;
+  if (connectionStatus === "ERROR" || (signals != null && signals.length > 0 && staleCount === signals.length)) {
+    return { color: "red", label: "資料異常" };
+  }
+  if (stillLoading || connectionStatus !== "LIVE" || staleCount > 0) {
+    return { color: "yellow", label: "等待訊號" };
+  }
+  return { color: "green", label: "即時監控中" };
+}
 
-  const status = statusBadge[connectionStatus];
+export default function Home() {
+  const { coins, connectionStatus, loading, reload } = useMarketData();
 
   const [engineSignals, setEngineSignals] = useState<LiveSignal[] | null>(null);
   const [engineLoading, setEngineLoading] = useState(false);
@@ -76,7 +77,7 @@ export default function Home() {
     newlyOpen.forEach((r) => {
       showNotification(
         `A級進場訊號：${r.symbol.replace("USDT", "")} ${r.direction === "LONG" ? "做多" : "做空"}`,
-        `進場 ${r.entryPrice.toPrecision(6)} ・ 止損 ${r.stopLoss.toPrecision(6)} ・ 止盈 ${r.takeProfit.toPrecision(6)}`,
+        `進場價 ${r.entryPrice.toPrecision(6)} ・ 止損 ${r.stopLoss.toPrecision(6)} ・ 止盈 ${r.takeProfit.toPrecision(6)}`,
         r.id
       );
     });
@@ -89,7 +90,11 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const activeSignals = engineSignals ? engineSignals.filter((s) => s.state === "RETEST_CONFIRMED") : [];
+  const activeSignals = sortByRecency(engineSignals ? engineSignals.filter((s) => s.state === "RETEST_CONFIRMED") : []);
+  const signalsMap: Record<string, LiveSignal> = {};
+  (engineSignals ?? []).forEach((s) => (signalsMap[s.symbol] = s));
+
+  const systemStatus = computeSystemStatus(connectionStatus, engineSignals, engineLoading && !engineSignals);
 
   const handleEnableNotifications = async () => {
     const result = await requestNotificationPermission();
@@ -104,12 +109,8 @@ export default function Home() {
 
   return (
     <main className="max-w-md mx-auto px-4 pt-5">
-      {/* 頂部品牌列 */}
-      <header className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-xl font-display font-bold tracking-tight">A Signal</span>
-          <StatusDot color={status.color} label={status.label} />
-        </div>
+      <header className="mb-3 flex items-center justify-between">
+        <span className="text-xl font-display font-bold tracking-tight">A Signal</span>
         <button
           onClick={handleRefresh}
           aria-label="更新"
@@ -122,57 +123,28 @@ export default function Home() {
         </button>
       </header>
 
-      {errors.length > 0 && (
-        <div className="mb-3 rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn space-y-0.5">
-          {errors.map((e, i) => (
-            <div key={i} className="break-words">
-              {e}
-            </div>
-          ))}
-        </div>
-      )}
+      {/* 第一區：系統狀態 */}
+      <Card className="!py-3">
+        <StatusDot color={systemStatus.color} label={systemStatus.label} size="md" />
+      </Card>
 
-      {/* 1. A級機會 — 最重要的視覺焦點 */}
+      {/* 第二區：目前交易機會 — 全App最重要的視覺焦點 */}
       <Card>
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-sm font-semibold">A級機會</span>
-          {engineLoading && <span className="text-[10px] text-subtext">檢查中…</span>}
-        </div>
+        <div className="text-xs text-subtext mb-2">目前交易機會</div>
         {activeSignals.length > 0 ? (
-          activeSignals.map((s) => <SignalCard key={s.symbol} s={s} />)
+          activeSignals.map((s) => (
+            <SignalCard
+              key={s.symbol}
+              s={s}
+              stats={oosSummary ? { winRate: oosSummary.winRate, expectancy: oosSummary.expectancy } : undefined}
+            />
+          ))
         ) : (
-          <EmptyState text="目前沒有A級機會" sub="系統持續監控中" />
+          <EmptyState text="目前沒有符合條件的A級訊號" sub="系統持續監控中" />
         )}
       </Card>
 
-      {/* 2. 即時價格 */}
-      <Card>
-        <div className="text-xs text-subtext mb-2">即時價格</div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="rounded-xl bg-panel2 p-3 min-w-0">
-            <div className="text-xs text-subtext mb-0.5">BTC</div>
-            <div className="text-base font-semibold numeric-safe truncate">{btc ? `$${fmt(btc.price)}` : "—"}</div>
-            {btc && (
-              <div className={`text-xs ${btc.change24h >= 0 ? "text-bull" : "text-bear"}`}>
-                {btc.change24h >= 0 ? "+" : ""}
-                {btc.change24h.toFixed(1)}%
-              </div>
-            )}
-          </div>
-          <div className="rounded-xl bg-panel2 p-3 min-w-0">
-            <div className="text-xs text-subtext mb-0.5">ETH</div>
-            <div className="text-base font-semibold numeric-safe truncate">{eth ? `$${fmt(eth.price)}` : "—"}</div>
-            {eth && (
-              <div className={`text-xs ${eth.change24h >= 0 ? "text-bull" : "text-bear"}`}>
-                {eth.change24h >= 0 ? "+" : ""}
-                {eth.change24h.toFixed(1)}%
-              </div>
-            )}
-          </div>
-        </div>
-      </Card>
-
-      {/* 3. 策略狀態 */}
+      {/* 第三區：策略狀態 */}
       <Card>
         <div className="text-xs text-subtext mb-2">策略狀態</div>
         {oosSummary ? (
@@ -180,61 +152,49 @@ export default function Home() {
             <div className="mb-3">
               <StatusDot color={OOS_VERDICT_INFO[oosSummary.verdict].color} label={OOS_VERDICT_INFO[oosSummary.verdict].label} size="md" />
             </div>
-            <div className="grid grid-cols-4 gap-2 text-center text-xs">
-              <div>
-                <div className="text-subtext">樣本</div>
-                <div className="font-semibold numeric-safe">{oosSummary.sampleCount}</div>
-              </div>
+            <div className="grid grid-cols-3 gap-2 text-center text-xs">
               <div>
                 <div className="text-subtext">勝率</div>
-                <div className="font-semibold numeric-safe">{oosSummary.winRate.toFixed(1)}%</div>
+                <div className="font-semibold numeric-safe text-sm">{oosSummary.winRate.toFixed(1)}%</div>
               </div>
               <div>
                 <div className="text-subtext">期望值</div>
-                <div className={`font-semibold numeric-safe ${oosSummary.expectancy >= 0 ? "text-bull" : "text-bear"}`}>
+                <div className={`font-semibold numeric-safe text-sm ${oosSummary.expectancy >= 0 ? "text-bull" : "text-bear"}`}>
                   {oosSummary.expectancy >= 0 ? "+" : ""}
                   {oosSummary.expectancy.toFixed(2)}R
                 </div>
               </div>
               <div>
                 <div className="text-subtext">最大回撤</div>
-                <div className="font-semibold numeric-safe text-bear">-{oosSummary.maxDrawdownR.toFixed(2)}R</div>
+                <div className="font-semibold numeric-safe text-sm text-bear">-{oosSummary.maxDrawdownR.toFixed(2)}R</div>
               </div>
             </div>
           </div>
         ) : (
-          <div className="text-xs text-subtext">尚未驗證，去「查看完整驗證數據」跑一次分析。</div>
+          <div className="text-xs text-subtext">尚未驗證，前往「查看完整驗證」跑一次分析。</div>
         )}
         <Link href="/journal" className="text-xs text-bull mt-3 inline-block">
-          查看完整驗證數據 →
+          查看完整驗證 →
         </Link>
-        {notifPermission !== "granted" && notifPermission !== "unsupported" && (
-          <button onClick={handleEnableNotifications} className="btn-primary w-full border border-border bg-panel2 text-xs mt-3">
-            開啟A級訊號通知
-          </button>
-        )}
       </Card>
 
-      {/* 4. 我的資金 */}
+      {/* 第四區：即時市場 */}
       <Card>
-        <div className="text-xs text-subtext mb-2">我的資金</div>
-        <div className="flex items-end justify-between mb-2">
-          <div className="text-2xl font-display font-bold numeric-safe">NT${capital.toLocaleString()}</div>
-          <div className="text-xs text-subtext text-right">
-            目標
-            <br />
-            NT$1,000,000,000
-          </div>
-        </div>
-        <div className="text-xs text-subtext mb-1">目前 {capitalState.phase.label}</div>
-        <div className="h-2 rounded-full bg-panel2 overflow-hidden">
-          <div className="h-full bg-brand" style={{ width: `${capitalState.progressPct}%` }} />
-        </div>
+        <div className="text-xs text-subtext mb-2">即時市場</div>
+        <MarketMiniTable symbols={AUDIT_SYMBOLS} coins={coins} signals={signalsMap} />
+        <Link href="/market" className="text-xs text-bull mt-3 inline-block">
+          查看市場詳細資料 →
+        </Link>
       </Card>
 
-      <footer className="text-center text-[11px] text-subtext pb-4">
-        {lastUpdated ? `更新時間：${lastUpdated.toLocaleString()}` : "尚未更新"}
-        <div className="mt-2 leading-relaxed opacity-70">本系統僅供決策參考，不構成投資建議，不保證獲利。</div>
+      {notifPermission !== "granted" && notifPermission !== "unsupported" && (
+        <button onClick={handleEnableNotifications} className="btn-primary w-full border border-border bg-panel2 text-xs mb-3">
+          開啟A級訊號通知
+        </button>
+      )}
+
+      <footer className="text-center text-[11px] text-subtext pb-4 opacity-70">
+        本系統僅供決策參考，不構成投資建議，不保證獲利。
       </footer>
     </main>
   );
