@@ -9,6 +9,12 @@ import crypto from "crypto";
 // 需要在 Vercel 環境變數設定：
 // BINANCE_TESTNET_API_KEY
 // BINANCE_TESTNET_API_SECRET
+//
+// 【地區限制修正】Binance會擋掉來自「受限制地區」的請求，Vercel serverless function
+// 預設可能架在美國機房，容易被擋（HTTP 451）。這裡把這支API指定跑在香港機房(hkg1)，
+// 離台灣近、理論上比較不容易被列為受限制地區——這是嘗試，不保證一定解決，如果還是
+// 被擋，代表問題不是機房地區本身，需要別的做法（例如另外架一台代理伺服器）。
+export const preferredRegion = "hkg1";
 
 const TESTNET_BASE = "https://testnet.binance.vision";
 
